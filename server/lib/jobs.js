@@ -22,7 +22,7 @@ class Jobs {
     this.jobs = new Map(); this.running = new Set(); this.dirty = new Set();
     for (const f of fs.readdirSync(this.dir)) if (f.endsWith('.json')) { const j = readJson(path.join(this.dir, f)); if (j && j.id) this.jobs.set(j.id, j); }
     log(`jobs loaded: ${this.jobs.size}`);
-    this.restore().catch((e) => log('state restore failed', e.message));
+    this.ready = this.restore().catch((e) => log('state restore failed', e.message));
     this.timer = setInterval(() => this.tick().catch((e) => log('tick error', e.message)), 15000);
     setInterval(() => this.flush(), 3000);
     setTimeout(() => this.tick().catch(() => {}), 2000);
@@ -45,7 +45,7 @@ class Jobs {
     this.dirty.clear();
   }
   // Blomp container listing is broken (always empty) -> keep our own index of job ids
-  saveIndex() { this.sw.putJson(this.SP + '/index.json', { ids: [...this.jobs.keys()], t: Date.now() }).catch((e) => log('index save failed', e.message)); }
+  saveIndex() { if (!this._restored) return void this.ready?.then(() => this.saveIndex()); this.sw.putJson(this.SP + '/index.json', { ids: [...this.jobs.keys()], t: Date.now() }).catch((e) => log('index save failed', e.message)); }
   async restore() {
     const idx = await this.sw.getJson(this.SP + '/index.json', null);
     let n = 0;
@@ -54,6 +54,7 @@ class Jobs {
       const j = await this.sw.getJson(`${this.SP}/${id}.json`).catch(() => null); if (!j || !j.id) continue;
       this.jobs.set(j.id, j); n++;
     }
+    this._restored = true;
     if (n) log(`restored ${n} jobs from Blomp`);
     if (!idx || n || (idx.ids || []).length !== this.jobs.size) this.saveIndex();
   }
@@ -169,14 +170,14 @@ class Jobs {
     if (run.status !== 'completed') { if (!j.ingest.total || Date.now() - (j.ingest.jt || 0) > 60e3) { j.ingest.jt = Date.now(); this.syncJobs(j, run.id, 'ingest'); } return; }
     const tr = await this.sw.head(this.P(j) + '/transcript.json.gz');
     const missing = await this.sw.getJson(this.P(j) + '/missing.json', null);
-    if (tr && run.conclusion === 'success') { j.ingest.done = Date.now(); this.ev(j, `загрузка+транскрипт готовы за ${Math.round((j.ingest.done - j.ingest.started) / 1000)} с`); this.set(j, 'analyze', 'анализ ИИ'); return this.analyze(j); }
+    if (tr && run.conclusion === 'success') { j.ingest.done = Date.now(); this.ev(j, `загрузка+транскрипт готовы за ${Math.round((j.ingest.done - j.ingest.started) / 1000)} с`); this.set(j, 'analyze', 'анализ ИИ'); this.analyze(j); return; } // not awaited: analysis can take 30+ min and must not block tick()
     if (run.conclusion === 'cancelled') return this.fail(j, 'ingest', 'GitHub run отменён');
     if (missing && missing.length && j.ingest.tries < 3) {
       j.ingest.tries++; await this.sw.del(this.P(j) + '/missing.json');
       this.ev(j, `не хватает кусков ${missing.join(',')} — перезапуск (${j.ingest.tries}/3)`);
       return this.startIngest(j, missing.join(','));
     }
-    if (tr) { this.set(j, 'analyze', 'анализ ИИ (часть воркеров с ошибкой, транскрипт есть)'); return this.analyze(j); }
+    if (tr) { this.set(j, 'analyze', 'анализ ИИ (часть воркеров с ошибкой, транскрипт есть)'); this.analyze(j); return; }
     if (!(await this.sw.head(this.P(j) + '/plan.json'))) return this.fail(j, 'ingest', 'не удалось разобрать ссылку (plan) — проверь URL');
     if (j.ingest.tries < 2) { j.ingest.tries++; this.ev(j, 'ingest упал, повтор'); return this.startIngest(j); }
     this.fail(j, 'ingest', 'ingest завершился с ошибкой: ' + run.conclusion);
