@@ -210,6 +210,8 @@ class Jobs {
         if (e.type === 'model') j.stage = `анализ ИИ: шаг ${e.turn + 1}` + (e.calls && e.calls.length ? ' (' + e.calls.map((c) => c.name).join(', ') + ')' : '');
         this.save(j);
       };
+      // smoke test: if ffmpeg can't read from Blomp the agent would run blind (no frames/video/audio, no blur)
+      try { await media.frame(tr.range[0] + 5); } catch (e) { throw new Error('ffmpeg не может достать кадр из Blomp, анализ вслепую не запускаю: ' + e.message.slice(0, 200)); }
       const profP = j.opts.bleep ? profanity.detect(tr.utts, this.cfg.nvidia || {}).catch((e) => ({ intervals: [], error: e.message })) : Promise.resolve(null);
       const agent = new Agent({ gemini: this.g, media, tr, opts: j.opts, onEvent: step, maxTurns: this.cfg.max_turns || 70 });
       const [res, prof] = await Promise.all([agent.run(), profP]);
