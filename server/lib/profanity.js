@@ -23,7 +23,11 @@ async function nvidiaList(vocab, { key, model, fallbackModels = [], baseUrl = 'h
     const j = await r.json();
     const txt = (j.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '');
     const a = txt.indexOf('{'), b = txt.lastIndexOf('}');
-    return JSON.parse(txt.slice(a, b + 1)).words || [];
+    try { return JSON.parse(txt.slice(a, b + 1)).words || []; } catch {
+      // truncated / sloppy JSON (gpt-oss often cuts off): salvage the quoted words
+      const got = [...txt.slice(a).matchAll(/"([^"\\]{1,40})"/g)].map((m) => m[1]).filter((w) => w !== 'words');
+      if (got.length) return got; throw new Error('bad JSON from ' + m);
+    }
   };
   let i = 0, used = model; const dead = new Set();
   await Promise.all(Array.from({ length: 4 }, async () => {
