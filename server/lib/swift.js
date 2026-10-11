@@ -101,13 +101,14 @@ class Swift {
   }
   // Stream object bytes [start, size) to write(chunk) with resume-on-failure (Range).
   async pipeTo(name, size, write, start = 0) {
-    let pos = start, fails = 0;
+    let pos = start, fails = 0, nf = 0;
     name = await this.resolve(name);
     while (pos < size) {
       try {
         await this.auth();
         const r = await fetch(this.objUrl(name), { headers: { 'X-Auth-Token': this.token, Range: `bytes=${pos}-${size - 1}` }, signal: AbortSignal.timeout(6 * 3600e3) });
         if (r.status === 401) { await this.auth(true); throw new Error('401'); }
+        if (r.status === 404) { nf++; if (nf === 1) { this.rc?.delete(name); name = await this.resolve(name); } if (nf > 3) { const e = new Error('object missing: ' + name); e.clientGone = true; throw e; } throw new Error('GET 404'); }
         if (r.status !== 206 && r.status !== 200) throw new Error('GET ' + r.status);
         if (r.status === 200 && pos > 0) throw new Error('range ignored');
         for await (const chunk of r.body) { await write(chunk); pos += chunk.length; fails = 0; }

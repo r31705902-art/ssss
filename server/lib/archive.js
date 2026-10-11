@@ -96,6 +96,7 @@ async function serveLayout(layout, swift, req, res, { filename, type }) {
     if (res.write(c)) ok(); else res.once('drain', ok);
   });
   let pos = 0;
+  try {
   for (const s of layout.segs) {
     const len = s.buf ? s.buf.length : s.size;
     const a = Math.max(start, pos), b = Math.min(end + 1, pos + len);
@@ -105,6 +106,7 @@ async function serveLayout(layout, swift, req, res, { filename, type }) {
     }
     pos += len; if (pos > end) break;
   }
+  } catch (e) { if (!e.clientGone) require('./util').log('serve failed', filename, e.message); res.destroy(); return; }
   res.end();
 }
 module.exports = { zipLayout, tarLayout, serveLayout };

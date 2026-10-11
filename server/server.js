@@ -60,14 +60,14 @@ function mount(cfgPath = process.env.AUTOCUT_CONFIG || path.join(process.env.HOM
         const { folder, entries } = jobs.entries(j);
         if (m[4] != null) {
           const e = entries[Number(m[4])]; if (!e) return json(res, 404, {});
-          const L = { segs: [{ blomp: e.blomp, size: e.size }], size: e.size };
+          const L = { segs: [e.buf ? { buf: e.buf } : { blomp: e.blomp, size: e.size }], size: e.size };
           const fn = e.name.split('/').pop();
-          return serveLayout(L, swift, req, res, { filename: fn, type: /\.mp4$/.test(fn) ? 'video/mp4' : /\.jpg$/.test(fn) ? 'image/jpeg' : 'text/plain; charset=utf-8' });
+          return await serveLayout(L, swift, req, res, { filename: fn, type: /\.mp4$/.test(fn) ? 'video/mp4' : /\.jpg$/.test(fn) ? 'image/jpeg' : 'text/plain; charset=utf-8' });
         }
         const tar = m[3] === 'archive.tar';
         const L = tar ? tarLayout(entries) : zipLayout(entries);
         log(`download ${j.id} ${m[3]} ${(L.size / 1e6).toFixed(0)}MB range=${req.headers.range || '-'}`);
-        return serveLayout(L, swift, req, res, { filename: folder + (tar ? '.tar' : '.zip'), type: tar ? 'application/x-tar' : 'application/zip' });
+        return await serveLayout(L, swift, req, res, { filename: folder + (tar ? '.tar' : '.zip'), type: tar ? 'application/x-tar' : 'application/zip' });
       }
       if (!authed(req)) return json(res, 401, { error: 'auth' });
       if (p === '/api/me') return json(res, 200, { ok: true, defaults: cfg.defaults, model: cfg.gemini.model });

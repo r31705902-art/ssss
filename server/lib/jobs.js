@@ -137,7 +137,7 @@ class Jobs {
     this.save(j);
   }
 
-  ghBusy() { return [...this.jobs.values()].filter((j) => ACTIVE_GH.includes(j.state)).length >= (this.cfg.max_gh_jobs || 1); }
+  ghBusy() { return [...this.jobs.values()].filter((j) => ACTIVE_GH.includes(j.state)).length >= (this.cfg.max_gh_jobs || 2); }
 
   async tick() {
     if (this._ticking) return; this._ticking = true;
@@ -236,7 +236,7 @@ class Jobs {
     await Promise.all(all.map(async (f, k) => {
       const buf = Buffer.from(f.text, 'utf8'); const name = `${this.P(j)}/out/text/${String(k).padStart(3, '0')}`;
       await this.sw.put(name, buf, 'text/plain; charset=utf-8');
-      files[k] = { name: f.name, video: f.video, blomp: name, size: buf.length, crc: crc32(buf) };
+      files[k] = { name: f.name, video: f.video, blomp: name, size: buf.length, crc: crc32(buf), text: f.text };
     }));
     j.outputs = { videos: render.videos.map((v) => ({ ...v, duration: b.videos.find((x) => x.id === v.id).duration, kind: b.videos.find((x) => x.id === v.id).kind })), files, blur: b.blur, bleeps: b.bleep.length, pieces: pieces.length };
     j.render = { pieces: {}, tries: 0 };
@@ -280,12 +280,14 @@ class Jobs {
     const man = j.outputs?.manifest || {};
     const out = [];
     const folder = (j.result?.stream_title ? require('./util').safeName(j.result.stream_title, 80) : j.id);
-    for (const f of j.outputs.files.filter((f) => !f.video)) out.push({ name: `${folder}/${f.name}`, blomp: f.blomp, size: f.size, crc: f.crc });
+    // text files are served from job state (Blomp may drop small objects); Blomp copy is only a fallback
+    const fe = (f) => (f.text != null ? { name: `${folder}/${f.name}`, buf: Buffer.from(f.text, 'utf8'), size: f.size, crc: f.crc } : { name: `${folder}/${f.name}`, blomp: f.blomp, size: f.size, crc: f.crc });
+    for (const f of j.outputs.files.filter((f) => !f.video)) out.push(fe(f));
     for (const v of j.outputs.videos) {
       const m = man[v.id]; const base = v.file.replace(/\.mp4$/, '');
       if (m) out.push({ name: `${folder}/${v.file}`, blomp: `${this.P(j)}/out/${v.id}.mp4`, size: m.size, crc: m.crc });
       if (m && m.thumb) out.push({ name: `${folder}/${base}.jpg`, blomp: `${this.P(j)}/out/${v.id}.jpg`, size: m.thumb.size, crc: m.thumb.crc });
-      for (const f of j.outputs.files.filter((f) => f.video === v.id)) out.push({ name: `${folder}/${f.name}`, blomp: f.blomp, size: f.size, crc: f.crc });
+      for (const f of j.outputs.files.filter((f) => f.video === v.id)) out.push(fe(f));
     }
     return { folder, entries: out };
   }
