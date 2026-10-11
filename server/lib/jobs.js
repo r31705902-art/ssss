@@ -121,10 +121,10 @@ class Jobs {
     const st = j.failedAt || 'ingest';
     j.error = null;
     if (st === 'ingest') { j.ingest.tries = 0; this.set(j, 'queued', 'повтор: загрузка'); }
-    else if (st === 'analyze') this.set(j, 'analyze', 'повтор анализа');
+    else if (st === 'analyze') { j.analyzeTries = 0; j.analyzeAfter = 0; this.set(j, 'analyze', 'повтор анализа'); }
     else { j.render.tries = 0; this.set(j, 'render_wait', 'повтор рендера'); }
   }
-  reanalyze(j, notes) { if (notes != null) j.opts.notes = notes; j.analysis = null; this.set(j, 'analyze', 'повторный анализ'); }
+  reanalyze(j, notes) { if (notes != null) j.opts.notes = notes; j.analysis = null; j.analyzeTries = 0; j.analyzeAfter = 0; this.set(j, 'analyze', 'повторный анализ'); }
   fail(j, where, msg) { j.error = msg; j.failedAt = where; this.set(j, 'error', `${where}: ${String(msg).slice(0, 300)}`); }
 
   hook(b) {
@@ -146,7 +146,7 @@ class Jobs {
         try {
           if (j.state === 'queued' && !this.ghBusy()) await this.startIngest(j);
           else if (j.state === 'ingest') await this.pollIngest(j);
-          else if (j.state === 'analyze' && !this.running.has(j.id)) this.analyze(j);
+          else if (j.state === 'analyze' && !this.running.has(j.id) && !(j.analyzeAfter > Date.now())) this.analyze(j);
           else if (j.state === 'render_wait' && !this.ghBusy()) await this.startRender(j);
           else if (j.state === 'render') await this.pollRender(j);
         } catch (e) { log(`job ${j.id} tick: ${e.message}`); this.ev(j, 'ошибка шага: ' + e.message.slice(0, 300)); if (e.fatal) this.fail(j, j.state === 'render' || j.state === 'render_wait' ? 'render' : 'ingest', e.message); }
@@ -217,7 +217,9 @@ class Jobs {
       this.tick().catch(() => {});
     } catch (e) {
       log('analyze failed', j.id, e.stack || e.message);
-      this.fail(j, 'analyze', e.message);
+      j.analyzeTries = (j.analyzeTries || 0) + 1;
+      if (j.analyzeTries < 3) { j.analyzeAfter = Date.now() + 120e3 * j.analyzeTries; this.ev(j, `анализ упал (${e.message.slice(0, 160)}), повтор ${j.analyzeTries}/2 через ${2 * j.analyzeTries} мин`); this.set(j, 'analyze', 'повтор анализа скоро'); }
+      else this.fail(j, 'analyze', e.message);
     } finally { this.running.delete(j.id); }
   }
   async prepareRender(j, tr, prof) {

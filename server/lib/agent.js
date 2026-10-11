@@ -50,7 +50,7 @@ const TOOLS = [
 class Agent {
   constructor({ gemini, media, tr, opts, onEvent = () => {}, maxTurns = 70 }) {
     this.g = gemini; this.m = media; this.tr = tr; this.opts = opts; this.ev = onEvent; this.maxTurns = maxTurns;
-    this.seen = []; this.frames = []; this.previews = []; this.geo = null; this.calls = 0;
+    this.seen = []; this.frames = []; this.previews = []; this.geo = null; this.calls = 0; this.budget = 8e6;
   }
   T(v) { const t = parseTs(v); if (!Number.isFinite(t)) throw new Error('bad time: ' + v); return Math.min(Math.max(t, this.tr.range[0]), this.tr.range[1]); }
   transcriptText(s = -1, e = 1e12, words = false) {
@@ -165,13 +165,16 @@ class Agent {
     const fr = this.frames.filter((x) => x >= s && x <= e).length;
     if (cov < Math.min(15, d * 0.3) && fr < 3) errs.push(`${what} ${fmtTs(s)}–${fmtTs(e)} (${c.reason || ''}): не проверено — посмотри get_video/get_audio по этому месту (или ≥3 кадра внутри)`);
   }
-  stripOld(contents) {
-    // keep media only in the last 4 tool turns to keep requests light
-    let n = 0;
-    for (let i = contents.length - 1; i >= 1; i--) {
+  stripOld(contents, budget = this.budget) {
+    // keep media only in the last 4 tool turns and within a byte budget (the proxy crashes on heavy requests);
+    // the newest media turn is always kept
+    let n = 0, used = 0;
+    for (let i = contents.length - 1; i >= 0; i--) {
       const c = contents[i];
       if (c.role !== 'user' || !c.parts.some((p) => p.inlineData)) continue;
-      if (++n <= 4) continue;
+      const sz = c.parts.reduce((a, p) => a + (p.inlineData ? p.inlineData.data.length : 0), 0);
+      n++;
+      if (n === 1 || (n <= 4 && used + sz <= budget)) { used += sz; continue; }
       c.parts = c.parts.map((p) => (p.inlineData ? { text: '[медиа скрыто из истории; запроси заново при необходимости]' } : p));
     }
   }
@@ -188,12 +191,25 @@ class Agent {
       const t0 = Date.now();
       let r;
       try { r = await this.g.generate({ contents, system, tools: TOOLS, temperature: 0.6 }); } catch (e) {
+        if (e.overload) {
+          // shrink: keep only the newest media turn, then retry; if still failing, drop it too
+          this.budget = Math.max(1, Math.floor(this.budget / 3));
+          this.stripOld(contents, 0);
+          this.ev({ type: 'step', text: 'Прокси Gemini перегружен медиа — уменьшаю запрос' });
+          try { r = await this.g.generate({ contents, system, tools: TOOLS, temperature: 0.6 }); } catch (e2) {
+            if (!e2.overload) throw e2;
+            const last = contents[contents.length - 1];
+            last.parts = last.parts.map((p) => (p.inlineData ? { text: '[медиа слишком тяжёлое для модели — запроси короче/с меньшим fps или кадрами]' } : p));
+            r = await this.g.generate({ contents, system, tools: TOOLS, temperature: 0.6 });
+          }
+        } else {
         if (!/image|media|video|audio|INVALID_ARGUMENT/i.test(e.message)) throw e;
         // a media part was rejected: drop media from the last turn and tell the model
         const last = contents[contents.length - 1];
         last.parts = last.parts.map((p) => (p.inlineData ? { text: '[медиа не принято моделью — запроси заново, другим способом/моментом]' } : p));
         this.ev({ type: 'step', text: 'Модель не приняла медиа, повтор без него' });
         r = await this.g.generate({ contents, system, tools: TOOLS, temperature: 0.6 });
+        }
       }
       contents.push(r.content);
       const say = Gemini.text(r.content).trim();
