@@ -12,7 +12,10 @@ class Media {
   }
   chunkAt(t) {
     const c = this.chunks;
-    return c.find((x) => t >= x.start && t < x.end) || (t < c[0].start ? c[0] : c[c.length - 1]);
+    // chunks overlap by a few ms (end=1200.004, next start=1200): take the LAST chunk that starts at/before t,
+    // otherwise t=1200 lands 0.004s past the previous chunk's last video frame -> empty jpeg
+    for (let k = c.length - 1; k >= 0; k--) if (t >= c[k].start) return t < c[k].end || k === c.length - 1 ? c[k] : c[Math.min(k + 1, c.length - 1)];
+    return c[0];
   }
   clampT(t) { const c = this.chunks; return Math.min(Math.max(t, c[0].start), c[c.length - 1].end - 0.05); }
   async exists(ci, kind) {

@@ -143,11 +143,14 @@ class Jobs {
   async tick() {
     if (this._ticking) return; this._ticking = true;
     try {
+      // analysis is serialized; shortest stream first so small jobs don't wait behind a 6h VOD
+      const canA = (j) => j.state === 'analyze' && !this.running.has(j.id) && !(j.analyzeAfter > Date.now());
+      const nextA = this.list().filter(canA).sort((x, y) => (x.meta?.duration || 1e9) - (y.meta?.duration || 1e9))[0];
       for (const j of this.list().reverse()) {
         try {
           if (j.state === 'queued' && !this.ghBusy()) await this.startIngest(j);
           else if (j.state === 'ingest') await this.pollIngest(j);
-          else if (j.state === 'analyze' && !this.running.has(j.id) && !(j.analyzeAfter > Date.now())) this.analyze(j);
+          else if (j === nextA && this.running.size < (this.cfg.max_analyze || 1)) this.analyze(j); // the Gemini proxy chokes on parallel agents
           else if (j.state === 'render_wait' && !this.ghBusy()) await this.startRender(j);
           else if (j.state === 'render') await this.pollRender(j);
         } catch (e) { log(`job ${j.id} tick: ${e.message}`); this.ev(j, 'ошибка шага: ' + e.message.slice(0, 300)); if (e.fatal) this.fail(j, j.state === 'render' || j.state === 'render_wait' ? 'render' : 'ingest', e.message); }
@@ -170,14 +173,14 @@ class Jobs {
     if (run.status !== 'completed') { if (!j.ingest.total || Date.now() - (j.ingest.jt || 0) > 60e3) { j.ingest.jt = Date.now(); this.syncJobs(j, run.id, 'ingest'); } return; }
     const tr = await this.sw.head(this.P(j) + '/transcript.json.gz');
     const missing = await this.sw.getJson(this.P(j) + '/missing.json', null);
-    if (tr && run.conclusion === 'success') { j.ingest.done = Date.now(); this.ev(j, `загрузка+транскрипт готовы за ${Math.round((j.ingest.done - j.ingest.started) / 1000)} с`); this.set(j, 'analyze', 'анализ ИИ'); this.analyze(j); return; } // not awaited: analysis can take 30+ min and must not block tick()
+    if (tr && run.conclusion === 'success') { j.ingest.done = Date.now(); this.ev(j, `загрузка+транскрипт готовы за ${Math.round((j.ingest.done - j.ingest.started) / 1000)} с`); this.set(j, 'analyze', 'анализ ИИ'); return; } // tick() starts analysis (not awaited, limited by max_analyze)
     if (run.conclusion === 'cancelled') return this.fail(j, 'ingest', 'GitHub run отменён');
     if (missing && missing.length && j.ingest.tries < 3) {
       j.ingest.tries++; await this.sw.del(this.P(j) + '/missing.json');
       this.ev(j, `не хватает кусков ${missing.join(',')} — перезапуск (${j.ingest.tries}/3)`);
       return this.startIngest(j, missing.join(','));
     }
-    if (tr) { this.set(j, 'analyze', 'анализ ИИ (часть воркеров с ошибкой, транскрипт есть)'); this.analyze(j); return; }
+    if (tr) { this.set(j, 'analyze', 'анализ ИИ (часть воркеров с ошибкой, транскрипт есть)'); return; }
     if (!(await this.sw.head(this.P(j) + '/plan.json'))) return this.fail(j, 'ingest', 'не удалось разобрать ссылку (plan) — проверь URL');
     if (j.ingest.tries < 2) { j.ingest.tries++; this.ev(j, 'ingest упал, повтор'); return this.startIngest(j); }
     this.fail(j, 'ingest', 'ingest завершился с ошибкой: ' + run.conclusion);
