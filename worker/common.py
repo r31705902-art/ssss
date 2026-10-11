@@ -73,25 +73,38 @@ class Swift:
         return self._req('PUT', name, data=b, headers={'Content-Type': ctype})
 
     def put_verified(self, name, b, ctype='application/octet-stream'):
-        for attempt in range(5):
+        base, alias = name, 0
+        for attempt in range(8):
+            name = self.alt_name(base, alias)
             self.put_errors.pop(name, None)
             self.put_bytes(name, b, ctype)
+            ok = False
             for k in range(5):
-                h = self.head(name)
-                if h and h['size'] == len(b):
-                    if not self.put_errors.get(name): return
-                    time.sleep(60); h = self.head(name)
-                    if h and h['size'] == len(b): return
-                    log(f'{name} vanished after upload, re-put'); break
+                h = self.head_exact(name)
+                if h and h['size'] == len(b): ok = True; break
                 time.sleep(2 + 3 * k)
-            log(f'verify failed for {name}, re-put')
+            if ok:
+                time.sleep(60 if self.put_errors.get(name) else 6)
+                h = self.head_exact(name)
+                if h and h['size'] == len(b):
+                    for k in range(alias): self.delete(self.alt_name(base, k))
+                    return
+                alias = min(alias + 1, self.ALTS - 1)
+                log(f'{name} vanished after put, retry as {self.alt_name(base, alias)}')
+            else:
+                log(f'verify failed for {name}, re-put')
         raise RuntimeError('put verify failed: ' + name)
 
     def put_json(self, name, obj):
         return self.put_verified(name, json.dumps(obj, ensure_ascii=False).encode(), 'application/json')
 
     def get_bytes(self, name):
-        return self._req('GET', name).content
+        try:
+            return self._req('GET', name).content
+        except NotFound:
+            real = self.resolve(name)
+            if real == name: raise
+            return self._req('GET', real).content
 
     def get_json(self, name, default=None):
         try:
@@ -99,12 +112,33 @@ class Swift:
         except NotFound:
             return default
 
-    def head(self, name):
+    ALTS = 5
+
+    @staticmethod
+    def alt_name(name, k):
+        """Blomp permanently 'eats' some object names (PUT ok, object gone seconds later). We then write to name~k.ext."""
+        if not k: return name
+        d, b = name.rsplit('/', 1) if '/' in name else ('', name)
+        stem, dot, ext = b.partition('.')
+        return (d + '/' if d else '') + f'{stem}~{k}' + (dot + ext if dot else '')
+
+    def head_exact(self, name):
         try:
             r = self._req('HEAD', name)
-            return {'size': int(r.headers.get('Content-Length', 0)), 'etag': r.headers.get('Etag', '').strip('"'), 'meta': {k[len('X-Object-Meta-'):].lower(): v for k, v in r.headers.items() if k.lower().startswith('x-object-meta-')}}
+            return {'name': name, 'size': int(r.headers.get('Content-Length', 0)), 'etag': r.headers.get('Etag', '').strip('"'), 'meta': {k[len('X-Object-Meta-'):].lower(): v for k, v in r.headers.items() if k.lower().startswith('x-object-meta-')}}
         except NotFound:
             return None
+
+    def head(self, name):
+        """HEAD with alias resolution (name, name~1, ...). Returned dict has the real 'name'."""
+        for k in range(self.ALTS):
+            h = self.head_exact(self.alt_name(name, k))
+            if h: return h
+        return None
+
+    def resolve(self, name):
+        h = self.head(name)
+        return h['name'] if h else name
 
     def delete(self, name):
         try: self._req('DELETE', name)
@@ -130,22 +164,28 @@ class Swift:
     def upload_file(self, name, path, ctype='application/octet-stream', meta=None):
         """Upload + verify (Blomp sometimes acks a PUT but loses the object). Re-uploads on mismatch."""
         size = os.path.getsize(path)
-        for attempt in range(6):
+        base, alias = name, 0
+        for attempt in range(8):
+            name = self.alt_name(base, alias)
             self.put_errors.pop(name, None)
             self._upload(name, path, ctype, meta)
             ok = False
             for k in range(6):
-                h = self.head(name)
+                h = self.head_exact(name)
                 if h and h['size'] == size: ok = True; break
                 time.sleep(3 + 4 * k)
             if ok:
                 # Blomp quirk: when a PUT attempt failed (503) and a retry succeeded, the object often vanishes
                 # ~30-60 s later. Re-check after a settle period and re-upload if it was dropped.
-                settle = 75 if self.put_errors.get(name) else 8
+                settle = 75 if self.put_errors.get(name) else 10
                 time.sleep(settle)
-                h = self.head(name)
-                if h and h['size'] == size: return size
-                log(f'{name} vanished after upload (settle {settle}s), re-upload {attempt+1}')
+                h = self.head_exact(name)
+                if h and h['size'] == size:
+                    if alias:  # drop stale lower aliases so readers resolve to this one
+                        for k in range(alias): self.delete(self.alt_name(base, k))
+                    return size
+                alias = min(alias + 1, self.ALTS - 1)
+                log(f'{name} vanished after upload (settle {settle}s), re-upload as {self.alt_name(base, alias)}')
                 continue
             log(f'verify failed for {name} (got {h and h["size"]}, want {size}), re-upload {attempt+1}')
         raise RuntimeError(f'upload verify failed: {name}')
@@ -176,6 +216,7 @@ class Swift:
 
     def download_file(self, name, path, chunk=8 << 20):
         """Resumable download with Range retries."""
+        name = self.resolve(name)
         def go():
             have = os.path.getsize(path) if os.path.exists(path) else 0
             self.auth()

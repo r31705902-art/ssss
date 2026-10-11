@@ -6,6 +6,7 @@ const zlib = require('node:zlib');
 const { log, rid, readJson, writeJson, crc32, sleep, fmtTs } = require('./util');
 const { Agent } = require('./agent');
 const { Media } = require('./media');
+const { Swift } = require('./swift');
 const outputs = require('./outputs');
 const profanity = require('./profanity');
 
@@ -43,24 +44,44 @@ class Jobs {
     }
     this.dirty.clear();
   }
+  // Blomp container listing is broken (always empty) -> keep our own index of job ids
+  saveIndex() { this.sw.putJson('autocut/state/index.json', { ids: [...this.jobs.keys()], t: Date.now() }).catch((e) => log('index save failed', e.message)); }
   async restore() {
-    const objs = await this.sw.list('autocut/state/');
+    const idx = await this.sw.getJson('autocut/state/index.json', null);
     let n = 0;
-    for (const o of objs) {
-      const id = (o.name || o).split('/').pop().replace(/\.json$/, '');
-      if (!id || this.jobs.has(id)) continue;
-      const j = await this.sw.getJson(`autocut/state/${id}.json`); if (!j || !j.id || j.deleted) continue;
+    for (const id of idx?.ids || []) {
+      if (this.jobs.has(id)) continue;
+      const j = await this.sw.getJson(`autocut/state/${id}.json`).catch(() => null); if (!j || !j.id) continue;
       this.jobs.set(j.id, j); n++;
     }
     if (n) log(`restored ${n} jobs from Blomp`);
+    if (!idx || n || (idx.ids || []).length !== this.jobs.size) this.saveIndex();
   }
-  ev(j, text, extra) {
-    j.events = j.events || [];
-    j.events.push({ t: Date.now(), text, ...(extra || {}) });
-    if (j.events.length > 600) j.events.splice(0, j.events.length - 600);
-    this.save(j);
+  // object names a job may have created (listing is unavailable, so enumerate them)
+  async objectNames(j, what = 'all') {
+    const P = this.P(j); const names = [];
+    const plan = await this.sw.getJson(P + '/plan.json', null).catch(() => null);
+    const rp = await this.sw.getJson(P + '/render.json', null).catch(() => null);
+    if (what === 'all' || what === 'chunks') for (const c of plan?.chunks || []) for (const f of ['src.mp4', 'proxy.mp4', 'transcript.json.gz']) names.push(`${P}/chunks/${String(c.i).padStart(3, '0')}/${f}`);
+    if (what === 'all' || what === 'render') for (const p of rp?.pieces || []) names.push(`${P}/render/${p.video}/${String(p.idx).padStart(4, '0')}.mp4`);
+    if (what === 'all') {
+      names.push(...['plan.json', 'render.json', 'transcript.json.gz', 'transcript.txt', 'missing.json', 'out/manifest.json'].map((f) => `${P}/${f}`));
+      for (const v of rp?.videos || []) names.push(`${P}/out/${v.id}.mp4`, `${P}/out/${v.id}.jpg`);
+      for (const f of j.outputs?.files || []) names.push(f.blomp);
+    }
+    return names;
   }
-  set(j, state, stage) { j.state = state; if (stage !== undefined) j.stage = stage; this.ev(j, `→ ${state}${stage ? ': ' + stage : ''}`); this.save(j, true); }
+  async purge(j, what = 'all') {
+    const names = await this.objectNames(j, what);
+    let i = 0, n = 0;
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      while (i < names.length) {
+        const base = names[i++];
+        for (let k = 0; k < 5; k++) { const h = await this.sw.headExact(Swift.alt(base, k)).catch(() => null); if (h) { await this.sw.del(h.name); n++; } else if (k) break; }
+      }
+    }));
+    return n;
+  }
   list() { return [...this.jobs.values()].sort((a, b) => b.created - a.created); }
   get(id) { return this.jobs.get(id); }
   create(url, opts) {
@@ -72,7 +93,7 @@ class Jobs {
     for (const k of ['workers', 'quality', 'range_start', 'range_end']) if (o[k] != null) o[k] = Number(o[k]) || 0;
     o.workers = Math.min(Math.max(o.workers || 25, 1), 60);
     const j = { id, url, opts: o, created: Date.now(), state: 'queued', stage: 'в очереди', dl: rid(16), events: [], ingest: { chunks: {}, tries: 0 }, render: { pieces: {}, tries: 0 } };
-    this.jobs.set(id, j); this.ev(j, 'создано: ' + url); this.save(j, true);
+    this.jobs.set(id, j); this.ev(j, 'создано: ' + url); this.save(j, true); this.saveIndex();
     setTimeout(() => this.tick().catch(() => {}), 100);
     return j;
   }
@@ -81,7 +102,8 @@ class Jobs {
     if (j.render?.run && j.state === 'render') await this.gh.cancel(j.render.run);
     this.jobs.delete(j.id); fs.rmSync(path.join(this.dir, j.id + '.json'), { force: true });
     this.sw.del(`autocut/state/${j.id}.json`).catch(() => {});
-    if (purge) this.sw.delPrefix(this.P(j) + '/').then((n) => log(`purged ${n} objects of ${j.id}`)).catch(() => {});
+    this.saveIndex();
+    if (purge) this.purge(j).then((n) => log(`purged ${n} objects of ${j.id}`)).catch((e) => log('purge failed', e.message));
   }
   async cancel(j) {
     if (j.ingest?.run && j.state === 'ingest') await this.gh.cancel(j.ingest.run);
@@ -204,11 +226,11 @@ class Jobs {
     const files = [];
     const txt = tr.utts.map((u) => `[${fmtTs(u.s)}] [${u.spk}] ${u.text}`).join('\n') + '\n';
     const all = [...b.files, { name: 'transcript.txt', text: (j.result.speakers ? 'Спикеры: ' + Object.entries(j.result.speakers).map(([k, v]) => `[${k}] ${v}`).join(', ') + '\n\n' : '') + txt }];
-    for (const [k, f] of all.entries()) {
+    await Promise.all(all.map(async (f, k) => {
       const buf = Buffer.from(f.text, 'utf8'); const name = `${this.P(j)}/out/text/${String(k).padStart(3, '0')}`;
       await this.sw.put(name, buf, 'text/plain; charset=utf-8');
-      files.push({ name: f.name, video: f.video, blomp: name, size: buf.length, crc: crc32(buf) });
-    }
+      files[k] = { name: f.name, video: f.video, blomp: name, size: buf.length, crc: crc32(buf) };
+    }));
     j.outputs = { videos: render.videos.map((v) => ({ ...v, duration: b.videos.find((x) => x.id === v.id).duration, kind: b.videos.find((x) => x.id === v.id).kind })), files, blur: b.blur, bleeps: b.bleep.length, pieces: pieces.length };
     j.render = { pieces: {}, tries: 0 };
     this.ev(j, `план рендера: ${render.videos.length} видео, ${pieces.length} кусков, блюр ${b.blur.length}, бипов ${b.bleep.length}`);
@@ -232,7 +254,7 @@ class Jobs {
       j.outputs.manifest = man; j.render.done = Date.now();
       this.ev(j, `рендер готов за ${Math.round((j.render.done - j.render.started) / 1000)} с`);
       this.set(j, 'done', 'готово');
-      this.sw.delPrefix(this.P(j) + '/render/').catch(() => {});
+      this.purge(j, 'render').catch(() => {});
       return;
     }
     if (run.conclusion === 'cancelled') return this.fail(j, 'render', 'GitHub run отменён');
@@ -264,7 +286,7 @@ class Jobs {
     const days = this.cfg.keep_source_days ?? 7;
     for (const j of this.jobs.values()) {
       if (j.state === 'done' && !j.sourcePurged && Date.now() - (j.render?.done || j.updated) > days * 86400e3) {
-        const n = await this.sw.delPrefix(this.P(j) + '/chunks/'); j.sourcePurged = Date.now(); this.ev(j, `исходники удалены из Blomp (${n} объектов)`);
+        const n = await this.purge(j, 'chunks'); j.sourcePurged = Date.now(); this.ev(j, `исходники удалены из Blomp (${n} объектов)`);
       }
     }
   }

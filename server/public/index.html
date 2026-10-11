@@ -14,7 +14,7 @@ textarea{min-height:60px}label{display:block;margin:7px 0 3px;color:var(--m);fon
 button{background:var(--a);color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}button.s{background:var(--p2);border:1px solid #3a3a48}button:disabled{opacity:.5}
 .job{padding:9px;border-radius:7px;cursor:pointer;border:1px solid transparent;margin-bottom:5px;background:var(--p2)}.job:hover,.job.sel{border-color:var(--a)}
 .job .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.small{font-size:12px;color:var(--m)}
-.st{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;background:#33333f}.st.done{background:#1d4d38;color:var(--ok)}.st.failed{background:#4d1d24;color:var(--er)}.st.canceled{background:#333}
+.st{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;background:#33333f}.st.done{background:#1d4d38;color:var(--ok)}.st.error,.st.failed{background:#4d1d24;color:var(--er)}.st.canceled{background:#333}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(34px,1fr));gap:3px}.cell{height:26px;border-radius:4px;background:#2a2a35;font-size:10px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
 .cell i{position:absolute;left:0;top:0;bottom:0;background:#5b3aa8;z-index:0}.cell b{position:relative;z-index:1;font-weight:500}.cell.done{background:#1d4d38}.cell.error{background:#6b2430}
 .steps{max-height:420px;overflow:auto;font-size:12.5px}.step{padding:5px 0;border-bottom:1px solid #26262f}.step .n{color:var(--a);font-weight:600}.step pre{white-space:pre-wrap;margin:3px 0 0;color:var(--m);font:12px/1.4 ui-monospace,monospace}
@@ -57,7 +57,7 @@ const ts=s=>{s=Math.max(0,Math.round(s||0));const h=Math.floor(s/3600),m=Math.fl
 const parseTs=v=>{v=(v||'').trim();if(!v)return null;const p=v.split(':').map(Number);return p.reduce((a,b)=>a*60+b,0)};
 const mb=b=>b>=1e9?(b/1e9).toFixed(2)+' ГБ':(b/1e6).toFixed(0)+' МБ';
 const ago=t=>{const d=(Date.now()-t)/1e3;return d<60?'только что':d<3600?Math.floor(d/60)+' мин назад':d<86400?Math.floor(d/3600)+' ч назад':new Date(t).toLocaleString('ru')};
-const ST={queued:'в очереди',ingest:'загрузка+транскрипт',analyze:'анализ',render_wait:'к рендеру',render:'рендер',done:'готово',failed:'ошибка',canceled:'отменено'};
+const ST={queued:'в очереди',ingest:'загрузка+транскрипт',analyze:'анализ',render_wait:'к рендеру',render:'рендер',done:'готово',error:'ошибка',failed:'ошибка',canceled:'отменено'};
 async function api(p,o={}){const r=await fetch(B+p,{...o,headers:{'Content-Type':'application/json',...(o.headers||{})},credentials:'same-origin'});if(r.status===401&&p!=='/api/login'){show(false);throw new Error('auth')}const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j}
 function show(ok){$('login').classList.toggle('hide',ok);$('app').classList.toggle('hide',!ok)}
 async function login(){try{await api('/api/login',{method:'POST',body:JSON.stringify({password:$('pw').value})});init()}catch(e){$('lerr').textContent=e.message}}
@@ -78,8 +78,8 @@ function render(j){const key=JSON.stringify([j.updated,j.state,j.stage,j.ingest,
 const m=j.meta||{},r=j.result,o=j.outputs,ing=j.ingest||{},ren=j.render||{};let h=`<div class="card"><h3>${esc(r?.stream_title||m.title||j.url)}</h3>
 <div class="small"><a href="${esc(j.url)}" target="_blank">${esc(j.url)}</a>${m.uploader?' · '+esc(m.uploader):''}${m.duration?' · '+ts(m.duration):''}${j.range?' · диапазон '+ts(j.range[0])+'–'+ts(j.range[1]):''}</div>
 <div style="margin:8px 0"><span class="st ${j.state}">${ST[j.state]||j.state}</span> ${esc(j.stage||'')}</div>${j.error?`<div class="err">${esc(j.error)}</div>`:''}
-<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">${['ingest','analyze','render','render_wait','queued'].includes(j.state)?'<button class="s" onclick="act(\'cancel\')">Отменить</button>':''}${['failed','canceled'].includes(j.state)?'<button class="s" onclick="act(\'retry\')">Повторить</button>':''}
-${j.state==='done'||j.state==='failed'?`<button class="s" onclick="reana()">Переанализировать…</button><button class="s" onclick="act('rerender')">Перерендерить</button>`:''}<button class="s" onclick="act('delete')">Удалить</button>${ing.done?`<a class="small" style="align-self:center" href="${B}/api/jobs/${j.id}/transcript" target="_blank">транскрипт</a>`:''}</div></div>`;
+<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">${['ingest','analyze','render','render_wait','queued'].includes(j.state)?'<button class="s" onclick="act(\'cancel\')">Отменить</button>':''}${['error','failed','canceled'].includes(j.state)?'<button class="s" onclick="act(\'retry\')">Повторить</button>':''}
+${j.state==='done'||j.state==='error'?`<button class="s" onclick="reana()">Переанализировать…</button><button class="s" onclick="act('rerender')">Перерендерить</button>`:''}<button class="s" onclick="act('delete')">Удалить</button>${ing.done?`<a class="small" style="align-self:center" href="${B}/api/jobs/${j.id}/transcript" target="_blank">транскрипт</a>`:''}</div></div>`;
 if(j.download&&o){const files=o.files||[];const man=o.manifest||{};const tot=o.videos.reduce((a,v)=>a+((man[v.id]||{}).size||0),0)+files.reduce((a,f)=>a+(f.size||0),0);
 h+=`<div class="card"><h3>Готово: ${o.videos.length} видео${tot?' · '+mb(tot):''}</h3><div class="dl"><a href="${j.download}/archive.zip">⬇ Скачать ZIP</a><a class="s" href="${j.download}/archive.tar">TAR</a><a class="s" href="#" onclick="ents();return false">отдельные файлы</a></div>
 <div class="small">Ссылка для скачивания (без пароля): <code>${location.origin+j.download}/archive.zip</code></div><div id="ents"></div></div>`}

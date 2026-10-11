@@ -22,7 +22,7 @@ class Swift {
     return this._authP;
   }
   objUrl(name) { return `${this.url}/${encodeURIComponent(this.container)}/${name.split('/').map(encodeURIComponent).join('/')}`; }
-  async signed(name) { await this.auth(); return { url: this.objUrl(name), token: this.token }; }
+  async signed(name) { await this.auth(); name = await this.resolve(name); return { url: this.objUrl(name), token: this.token }; }
   async req(method, name, { body, headers = {}, ok = [200, 201, 202, 204, 206], tries = 10, timeout = 300000 } = {}) {
     return retry(async () => {
       await this.auth();
@@ -33,25 +33,49 @@ class Swift {
       return r;
     }, `${method} ${name}`, { tries, giveUp: (e) => e.notFound });
   }
-  async get(name, opts) { const r = await this.req('GET', name, opts); return Buffer.from(await r.arrayBuffer()); }
-  async getJson(name, d = null) { try { return JSON.parse((await this.get(name)).toString('utf8')); } catch (e) { if (e.notFound) return d; throw e; } }
-  async getText(name, d = null) { try { return (await this.get(name)).toString('utf8'); } catch (e) { if (e.notFound) return d; throw e; } }
-  async put(name, buf, type = 'application/octet-stream', _depth = 0) {
-    this.putErr?.delete(name);
-    await this.req('PUT', name, { body: buf, headers: { 'Content-Type': type } });
-    // Blomp quirk: after a failed PUT attempt + successful retry the object may vanish ~1 min later -> verify & re-put
-    if (this.putErr?.has(name) && _depth < 3) {
-      this.putErr.delete(name);
-      await new Promise((ok) => setTimeout(ok, 70000));
-      const h = await this.head(name).catch(() => null);
-      if (!h || h.size !== buf.length) { log('blomp dropped', name, '-> re-put'); return this.put(name, buf, type, _depth + 1); }
-    }
+  // Blomp permanently 'eats' some object names (PUT ok, object gone seconds later); writers then use name~k.ext
+  static alt(name, k) {
+    if (!k) return name;
+    const i = name.lastIndexOf('/'); const d = name.slice(0, i + 1), b = name.slice(i + 1); const j = b.indexOf('.');
+    return d + (j < 0 ? b + '~' + k : b.slice(0, j) + '~' + k + b.slice(j));
   }
-  async putJson(name, o) { return this.put(name, Buffer.from(JSON.stringify(o)), 'application/json'); }
-  async head(name) {
-    try { const r = await this.req('HEAD', name, { tries: 6 }); return { size: Number(r.headers.get('content-length') || 0) }; }
+  async headExact(name) {
+    try { const r = await this.req('HEAD', name, { tries: 6 }); return { name, size: Number(r.headers.get('content-length') || 0) }; }
     catch (e) { if (e.notFound) return null; throw e; }
   }
+  async head(name) {
+    for (let k = 0; k < 5; k++) { const h = await this.headExact(Swift.alt(name, k)); if (h) { (this.rc = this.rc || new Map()).set(name, h.name); return h; } }
+    return null;
+  }
+  async resolve(name) {
+    const c = this.rc && this.rc.get(name); if (c) return c;
+    const h = await this.head(name); return h ? h.name : name;
+  }
+  async get(name, opts) {
+    try { const r = await this.req('GET', name, opts); return Buffer.from(await r.arrayBuffer()); }
+    catch (e) { if (!e.notFound) throw e; const real = await this.resolve(name); if (real === name) throw e; const r = await this.req('GET', real, opts); return Buffer.from(await r.arrayBuffer()); }
+  }
+  async getJson(name, d = null) { try { return JSON.parse((await this.get(name)).toString('utf8')); } catch (e) { if (e.notFound) return d; throw e; } }
+  async getText(name, d = null) { try { return (await this.get(name)).toString('utf8'); } catch (e) { if (e.notFound) return d; throw e; } }
+  async put(base, buf, type = 'application/octet-stream') {
+    let alias = 0;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const name = Swift.alt(base, alias);
+      this.putErr?.delete(name);
+      await this.req('PUT', name, { body: buf, headers: { 'Content-Type': type } });
+      // verify after a settle period (longer if a PUT attempt failed: Blomp drops such objects ~1 min later)
+      await sleep(this.putErr?.has(name) ? 60000 : 5000);
+      const h = await this.headExact(name).catch(() => null);
+      if (h && h.size === buf.length) {
+        (this.rc = this.rc || new Map()).set(base, name);
+        for (let k = 0; k < alias; k++) await this.del(Swift.alt(base, k));
+        return name;
+      }
+      alias = Math.min(alias + 1, 4); log('blomp dropped', name, '-> retry as', Swift.alt(base, alias));
+    }
+    throw new Error('put failed (object keeps vanishing): ' + base);
+  }
+  async putJson(name, o) { return this.put(name, Buffer.from(JSON.stringify(o)), 'application/json'); }
   async del(name) { try { await this.req('DELETE', name, { tries: 6 }); } catch (e) { if (!e.notFound) log('del failed', name, e.message); } }
   async list(prefix) {
     const out = []; let marker = '';
@@ -79,6 +103,7 @@ class Swift {
   // Stream object bytes [start, size) to write(chunk) with resume-on-failure (Range).
   async pipeTo(name, size, write, start = 0) {
     let pos = start, fails = 0;
+    name = await this.resolve(name);
     while (pos < size) {
       try {
         await this.auth();
