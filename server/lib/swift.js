@@ -68,7 +68,6 @@ class Swift {
       const h = await this.headExact(name).catch(() => null);
       if (h && h.size === buf.length) {
         (this.rc = this.rc || new Map()).set(base, name);
-        for (let k = 0; k < alias; k++) await this.del(Swift.alt(base, k));
         return name;
       }
       alias = Math.min(alias + 1, 4); log('blomp dropped', name, '-> retry as', Swift.alt(base, alias));
@@ -76,7 +75,7 @@ class Swift {
     throw new Error('put failed (object keeps vanishing): ' + base);
   }
   async putJson(name, o) { return this.put(name, Buffer.from(JSON.stringify(o)), 'application/json'); }
-  async del(name) { try { await this.req('DELETE', name, { tries: 6 }); } catch (e) { if (!e.notFound) log('del failed', name, e.message); } }
+  async del(name) { try { await this.req('DELETE', name, { tries: 3 }); } catch (e) { if (!e.notFound) log('del failed', name, e.message); } }
   async list(prefix) {
     const out = []; let marker = '';
     for (;;) {

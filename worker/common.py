@@ -87,7 +87,6 @@ class Swift:
                 time.sleep(60 if self.put_errors.get(name) else 6)
                 h = self.head_exact(name)
                 if h and h['size'] == len(b):
-                    for k in range(alias): self.delete(self.alt_name(base, k))
                     return
                 alias = min(alias + 1, self.ALTS - 1)
                 log(f'{name} vanished after put, retry as {self.alt_name(base, alias)}')
@@ -181,8 +180,6 @@ class Swift:
                 time.sleep(settle)
                 h = self.head_exact(name)
                 if h and h['size'] == size:
-                    if alias:  # drop stale lower aliases so readers resolve to this one
-                        for k in range(alias): self.delete(self.alt_name(base, k))
                     return size
                 alias = min(alias + 1, self.ALTS - 1)
                 log(f'{name} vanished after upload (settle {settle}s), re-upload as {self.alt_name(base, alias)}')
