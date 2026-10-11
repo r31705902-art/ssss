@@ -35,10 +35,12 @@ def main():
         b = None
         try: b = sw.get_bytes(f'{P}/chunks/{c["i"]:03d}/transcript.json.gz')
         except Exception as e: log('missing chunk', c['i'], e)
-        if b is None: missing.append(c['i']); continue
+        if b is None or not sw.head(f'{P}/chunks/{c["i"]:03d}/src.mp4') or not sw.head(f'{P}/chunks/{c["i"]:03d}/proxy.mp4'):
+            missing.append(c['i']); continue
         chunks.append(json.loads(gzip.decompress(b)))
     if missing:
-        hook.send('merge', stage='error', error=f'missing chunks {missing}')
+        hook.send('merge', stage='error', error=f'missing chunks {missing}', missing=missing)
+        sw.put_json(f'{P}/missing.json', missing)
         raise SystemExit(f'missing chunks: {missing}')
     items, noemb = [], []
     for ch in chunks:
@@ -66,7 +68,7 @@ def main():
     tr = {'job': JOB, 'meta': plan['meta'], 'range': [chunks[0]['start'], chunks[-1]['end']], 'chunks': manifest,
           'speakers': {str(k): round(v, 1) for k, v in sorted(talk.items(), key=lambda x: -x[1])},
           'utts': utts, 'loud_start': chunks[0]['start'], 'loud': loud, 'freeze': freeze, 'scenes': scenes, 'lang': chunks[0]['lang']}
-    sw.put_bytes(f'{P}/transcript.json.gz', gzip.compress(json.dumps(tr, ensure_ascii=False).encode()), 'application/gzip')
+    sw.put_verified(f'{P}/transcript.json.gz', gzip.compress(json.dumps(tr, ensure_ascii=False).encode()), 'application/gzip')
     txt = '\n'.join(f'[{fmt_ts(u["s"])}] [{u["spk"]}] {u["text"]}' for u in utts)
     sw.put_bytes(f'{P}/transcript.txt', txt.encode(), 'text/plain; charset=utf-8')
     log(f'merged {len(chunks)} chunks, {len(utts)} utterances, {len(talk)} global speakers: {tr["speakers"]}')

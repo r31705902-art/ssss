@@ -70,8 +70,18 @@ class Swift:
     def put_bytes(self, name, b, ctype='application/octet-stream'):
         return self._req('PUT', name, data=b, headers={'Content-Type': ctype})
 
+    def put_verified(self, name, b, ctype='application/octet-stream'):
+        for attempt in range(5):
+            self.put_bytes(name, b, ctype)
+            for k in range(5):
+                h = self.head(name)
+                if h and h['size'] == len(b): return
+                time.sleep(2 + 3 * k)
+            log(f'verify failed for {name}, re-put')
+        raise RuntimeError('put verify failed: ' + name)
+
     def put_json(self, name, obj):
-        return self.put_bytes(name, json.dumps(obj, ensure_ascii=False).encode(), 'application/json')
+        return self.put_verified(name, json.dumps(obj, ensure_ascii=False).encode(), 'application/json')
 
     def get_bytes(self, name):
         return self._req('GET', name).content
@@ -111,6 +121,18 @@ class Swift:
     SEG = 1024 * 1024 * 1024  # 1 GiB segments for big files (Swift single object limit is 5 GiB)
 
     def upload_file(self, name, path, ctype='application/octet-stream', meta=None):
+        """Upload + verify (Blomp sometimes acks a PUT but loses the object). Re-uploads on mismatch."""
+        size = os.path.getsize(path)
+        for attempt in range(5):
+            self._upload(name, path, ctype, meta)
+            for k in range(6):
+                h = self.head(name)
+                if h and h['size'] == size: return size
+                time.sleep(3 + 4 * k)
+            log(f'verify failed for {name} (got {h and h["size"]}, want {size}), re-upload {attempt+1}')
+        raise RuntimeError(f'upload verify failed: {name}')
+
+    def _upload(self, name, path, ctype, meta):
         size = os.path.getsize(path)
         hdr = {'Content-Type': ctype}
         for k, v in (meta or {}).items(): hdr['X-Object-Meta-' + k] = str(v)
@@ -133,7 +155,6 @@ class Swift:
             self._req('PUT', name, data=b'', headers=h)
         dt = time.time() - t0
         log(f'uploaded {name} {size/1e6:.1f} MB in {dt:.0f}s ({size/1e6/max(dt,0.01):.1f} MB/s)')
-        return size
 
     def download_file(self, name, path, chunk=8 << 20):
         """Resumable download with Range retries."""

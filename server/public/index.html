@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>autocut — нарезка Twitch-стримов</title>
+<style>
+:root{--bg:#0e0e12;--p:#18181f;--p2:#22222c;--t:#e8e8ef;--m:#9a9aae;--a:#9147ff;--ok:#3ecf8e;--er:#ff5c6c;--wa:#f5b942}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+a{color:#b18cff}header{padding:14px 20px;border-bottom:1px solid #2a2a35;display:flex;gap:12px;align-items:center}
+header b{font-size:18px}header span{color:var(--m)}main{max-width:1200px;margin:0 auto;padding:16px;display:grid;grid-template-columns:340px 1fr;gap:16px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.card{background:var(--p);border:1px solid #2a2a35;border-radius:10px;padding:14px;margin-bottom:14px}
+h3{margin:0 0 10px;font-size:15px}input,select,textarea{width:100%;background:var(--p2);color:var(--t);border:1px solid #33333f;border-radius:6px;padding:7px 9px;font:inherit}
+textarea{min-height:60px}label{display:block;margin:7px 0 3px;color:var(--m);font-size:12px}
+.row{display:flex;gap:8px}.row>*{flex:1}.chk{display:flex;align-items:center;gap:7px;margin:5px 0;color:var(--t);font-size:13px}.chk input{width:auto}
+button{background:var(--a);color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}button.s{background:var(--p2);border:1px solid #3a3a48}button:disabled{opacity:.5}
+.job{padding:9px;border-radius:7px;cursor:pointer;border:1px solid transparent;margin-bottom:5px;background:var(--p2)}.job:hover,.job.sel{border-color:var(--a)}
+.job .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.small{font-size:12px;color:var(--m)}
+.st{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;background:#33333f}.st.done{background:#1d4d38;color:var(--ok)}.st.failed{background:#4d1d24;color:var(--er)}.st.canceled{background:#333}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(34px,1fr));gap:3px}.cell{height:26px;border-radius:4px;background:#2a2a35;font-size:10px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.cell i{position:absolute;left:0;top:0;bottom:0;background:#5b3aa8;z-index:0}.cell b{position:relative;z-index:1;font-weight:500}.cell.done{background:#1d4d38}.cell.error{background:#6b2430}
+.steps{max-height:420px;overflow:auto;font-size:12.5px}.step{padding:5px 0;border-bottom:1px solid #26262f}.step .n{color:var(--a);font-weight:600}.step pre{white-space:pre-wrap;margin:3px 0 0;color:var(--m);font:12px/1.4 ui-monospace,monospace}
+.vid{display:grid;grid-template-columns:200px 1fr;gap:12px;padding:10px;background:var(--p2);border-radius:8px;margin-bottom:8px}.vid img{width:200px;border-radius:6px;background:#000}
+.vid pre{white-space:pre-wrap;font:12px/1.4 ui-monospace,monospace;color:var(--m);margin:6px 0 0;max-height:160px;overflow:auto}
+.dl{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.dl a{background:var(--ok);color:#06281a;padding:9px 14px;border-radius:7px;text-decoration:none;font-weight:600}.dl a.s{background:var(--p2);color:var(--t);border:1px solid #3a3a48}
+.ev{font:12px/1.45 ui-monospace,monospace;color:var(--m);max-height:220px;overflow:auto;white-space:pre-wrap}.err{color:var(--er)}
+#login{max-width:340px;margin:80px auto}.hide{display:none}.tag{display:inline-block;background:#2d2d3a;border-radius:4px;padding:0 5px;margin:2px;font-size:11px}
+.frames{display:flex;gap:6px;flex-wrap:wrap}.frames img{height:90px;border-radius:5px}
+</style></head><body>
+<header><b>✂️ autocut</b><span>Twitch → GitHub Actions (25 воркеров) → Gemini → готовые нарезки</span><span style="margin-left:auto" id="model"></span></header>
+<div id="login" class="card hide"><h3>Вход</h3><input id="pw" type="password" placeholder="пароль"><div style="margin-top:10px"><button onclick="login()">Войти</button> <span id="lerr" class="err"></span></div></div>
+<main id="app" class="hide">
+<div>
+<div class="card"><h3>Новая нарезка</h3>
+<input id="url" placeholder="https://www.twitch.tv/videos/…">
+<div class="row"><div><label>Воркеры</label><input id="workers" type="number" min="1" max="60" value="25"></div><div><label>Качество</label><select id="quality"><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option><option value="2160">макс.</option></select></div></div>
+<div class="row"><div><label>С (чч:мм:сс)</label><input id="rs" placeholder="начало"></div><div><label>До</label><input id="re" placeholder="конец"></div></div>
+<div class="row"><div><label>Whisper</label><select id="whisper"><option>large-v3-turbo</option><option>large-v3</option><option>medium</option><option>small</option></select></div><div><label>Язык</label><select id="lang"><option value="ru">ru</option><option value="en">en</option><option value="">авто</option></select></div></div>
+<label>Что сделать</label>
+<label class="chk"><input type="checkbox" id="parts" checked>Части стрима (по темам/активностям)</label>
+<label class="chk"><input type="checkbox" id="highlights">+ короткие хайлайты</label>
+<label class="chk"><input type="checkbox" id="full">+ весь стрим одним видео (с главами)</label>
+<label class="chk"><input type="checkbox" id="cut_boring" checked>Вырезать скучное (AFK, тишина) — после проверки видео/аудио</label>
+<label class="chk"><input type="checkbox" id="blur_ads" checked>Блюрить рекламу (FONBET, Donatov.net…)</label>
+<label class="chk"><input type="checkbox" id="bleep">Запикивать маты (NVIDIA)</label>
+<div class="row"><div><label>Пик</label><select id="bleep_mode"><option value="beep">бип</option><option value="mute">тишина</option></select></div><div><label>Высота вывода</label><select id="out_height"><option value="0">как исходник</option><option value="1080">1080</option><option value="720">720</option></select></div></div>
+<label>Пожелания модели</label><textarea id="notes" placeholder="например: нарезать только реакции на видео, длинные части не делить"></textarea>
+<div style="margin-top:10px"><button id="go" onclick="create()">Нарезать</button> <span id="cerr" class="err"></span></div>
+</div>
+<div class="card"><h3>Задачи</h3><div id="jobs" class="small">…</div></div>
+</div>
+<div id="detail"><div class="card small">Выбери задачу слева или создай новую.</div></div>
+</main>
+<script>
+const B='__BASE__';let sel=(location.hash.match(/job=([\w-]+)/)||[])[1]||null,timer=null,last=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ts=s=>{s=Math.max(0,Math.round(s||0));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+':':'')+String(m).padStart(h?2:1,'0')+':'+String(x).padStart(2,'0')};
+const parseTs=v=>{v=(v||'').trim();if(!v)return null;const p=v.split(':').map(Number);return p.reduce((a,b)=>a*60+b,0)};
+const mb=b=>b>=1e9?(b/1e9).toFixed(2)+' ГБ':(b/1e6).toFixed(0)+' МБ';
+const ago=t=>{const d=(Date.now()-t)/1e3;return d<60?'только что':d<3600?Math.floor(d/60)+' мин назад':d<86400?Math.floor(d/3600)+' ч назад':new Date(t).toLocaleString('ru')};
+const ST={queued:'в очереди',ingest:'загрузка+транскрипт',analyze:'анализ',render_wait:'к рендеру',render:'рендер',done:'готово',failed:'ошибка',canceled:'отменено'};
+async function api(p,o={}){const r=await fetch(B+p,{...o,headers:{'Content-Type':'application/json',...(o.headers||{})},credentials:'same-origin'});if(r.status===401&&p!=='/api/login'){show(false);throw new Error('auth')}const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j}
+function show(ok){$('login').classList.toggle('hide',ok);$('app').classList.toggle('hide',!ok)}
+async function login(){try{await api('/api/login',{method:'POST',body:JSON.stringify({password:$('pw').value})});init()}catch(e){$('lerr').textContent=e.message}}
+$('pw').onkeydown=e=>{if(e.key==='Enter')login()};
+async function init(){try{const me=await api('/api/me');show(true);$('model').textContent='модель: '+me.model;const d=me.defaults||{};for(const k of['workers','quality'])if(d[k])$(k).value=d[k];for(const k of['parts','highlights','full','cut_boring','blur_ads','bleep'])if(d[k]!=null)$(k).checked=!!d[k];refresh()}catch(e){if(e.message!=='auth')console.error(e)}}
+async function create(){$('cerr').textContent='';const o={workers:+$('workers').value,quality:+$('quality').value,whisper_model:$('whisper').value,language:$('lang').value,notes:$('notes').value,bleep_mode:$('bleep_mode').value,out_height:+$('out_height').value};
+for(const k of['parts','highlights','full','cut_boring','blur_ads','bleep'])o[k]=$(k).checked;const rs=parseTs($('rs').value),re=parseTs($('re').value);if(rs!=null)o.range_start=rs;if(re!=null)o.range_end=re;
+$('go').disabled=true;try{const j=await api('/api/jobs',{method:'POST',body:JSON.stringify({url:$('url').value,opts:o})});$('url').value='';pick(j.id)}catch(e){$('cerr').textContent=e.message}$('go').disabled=false}
+function pick(id){sel=id;location.hash='job='+id;last=null;refresh()}
+async function refresh(){clearTimeout(timer);try{const L=await api('/api/jobs');$('jobs').innerHTML=L.length?L.map(j=>`<div class="job ${j.id===sel?'sel':''}" onclick="pick('${j.id}')"><div class="t">${esc(j.title||j.url)}</div><div class="small"><span class="st ${j.state}">${ST[j.state]||j.state}</span> ${esc(j.stage||'')} · ${ago(j.created)}${j.duration?' · '+ts(j.duration):''}</div></div>`).join(''):'пока пусто';
+if(sel){const j=await api('/api/jobs/'+sel).catch(()=>null);if(j)render(j)}}catch(e){}
+timer=setTimeout(refresh,document.hidden?15000:4000)}
+async function act(a,b){if(a==='delete'&&!confirm('Удалить задачу и все файлы в хранилище?'))return;try{await api(`/api/jobs/${sel}/${a}`,{method:'POST',body:JSON.stringify(b||{})});if(a==='delete'){sel=null;$('detail').innerHTML=''}refresh()}catch(e){alert(e.message)}}
+function cells(obj,total,lbl){let h='';for(let i=0;i<total;i++){const c=obj[i]||{};const pct=c.stage==='done'?100:(c.pct||0);h+=`<div class="cell ${c.stage==='done'?'done':c.stage==='error'?'error':''}" title="${lbl} ${i}: ${esc(c.stage||'ждёт')}${c.error?' — '+esc(c.error):''}${c.elapsed?' ('+Math.round(c.elapsed)+' с)':''}"><i style="width:${c.stage==='done'?0:pct}%"></i><b>${i+1}</b></div>`}return `<div class="grid">${h}</div>`}
+function stepHtml(s,i){const ty=s.type||s.k;if(ty==='model'){const calls=(s.calls||[]).map(c=>`<span class="tag">${esc(c.name)}</span> ${esc(typeof c.args==='string'?c.args:JSON.stringify(c.args)).slice(0,300)}`).join('<br>');return `<div class="step"><span class="n">ход ${s.turn??''}</span> <span class="small">${(s.ms/1e3).toFixed(1)} с · ${s.tokens||''} ток.</span>${s.text?`<pre>${esc(s.text)}</pre>`:''}<div class="small">${calls}</div></div>`}
+if(ty==='tool')return `<div class="step small">↳ ${esc(s.name)}: ${esc(s.text)}</div>`;return `<div class="step small">• ${esc(s.text||JSON.stringify(s))}</div>`}
+function render(j){const key=JSON.stringify([j.updated,j.state,j.stage,j.ingest,j.render,j.analysis&&j.analysis.steps.length]);if(key===last)return;last=key;
+const m=j.meta||{},r=j.result,o=j.outputs,ing=j.ingest||{},ren=j.render||{};let h=`<div class="card"><h3>${esc(r?.stream_title||m.title||j.url)}</h3>
+<div class="small"><a href="${esc(j.url)}" target="_blank">${esc(j.url)}</a>${m.uploader?' · '+esc(m.uploader):''}${m.duration?' · '+ts(m.duration):''}${j.range?' · диапазон '+ts(j.range[0])+'–'+ts(j.range[1]):''}</div>
+<div style="margin:8px 0"><span class="st ${j.state}">${ST[j.state]||j.state}</span> ${esc(j.stage||'')}</div>${j.error?`<div class="err">${esc(j.error)}</div>`:''}
+<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">${['ingest','analyze','render','render_wait','queued'].includes(j.state)?'<button class="s" onclick="act(\'cancel\')">Отменить</button>':''}${['failed','canceled'].includes(j.state)?'<button class="s" onclick="act(\'retry\')">Повторить</button>':''}
+${j.state==='done'||j.state==='failed'?`<button class="s" onclick="reana()">Переанализировать…</button><button class="s" onclick="act('rerender')">Перерендерить</button>`:''}<button class="s" onclick="act('delete')">Удалить</button>${ing.done?`<a class="small" style="align-self:center" href="${B}/api/jobs/${j.id}/transcript" target="_blank">транскрипт</a>`:''}</div></div>`;
+if(j.download&&o){const files=o.files||[];const man=o.manifest||{};const tot=o.videos.reduce((a,v)=>a+((man[v.id]||{}).size||0),0)+files.reduce((a,f)=>a+(f.size||0),0);
+h+=`<div class="card"><h3>Готово: ${o.videos.length} видео${tot?' · '+mb(tot):''}</h3><div class="dl"><a href="${j.download}/archive.zip">⬇ Скачать ZIP</a><a class="s" href="${j.download}/archive.tar">TAR</a><a class="s" href="#" onclick="ents();return false">отдельные файлы</a></div>
+<div class="small">Ссылка для скачивания (без пароля): <code>${location.origin+j.download}/archive.zip</code></div><div id="ents"></div></div>`}
+if(r){h+=`<div class="card"><h3>Результат модели</h3>${r.description?`<div class="small" style="white-space:pre-wrap">${esc(r.description)}</div>`:''}`;
+const vs=(o&&o.videos)||r.videos||[];for(const v of vs){const ch=(v.chapters||[]).map(c=>(typeof c.t==='number'?ts(c.t):c.t||c.start)+' '+(c.title||'')).join('\n');const tt=v.thumb_t??v.thumbnail_t;
+h+=`<div class="vid"><img loading="lazy" src="${tt!=null&&typeof tt==='number'?`${B}/api/jobs/${j.id}/frame?t=${tt}`:''}"><div><b>${esc(v.title)}</b> <span class="tag">${esc(v.kind||'part')}</span> <span class="small">${v.duration?ts(v.duration):''}${v.src_range?' · из '+ts(v.src_range[0])+'–'+ts(v.src_range[1]):v.start?' · '+esc(v.start)+'–'+esc(v.end):''}${v.keep&&v.keep.length>1?' · вырезано '+(v.keep.length-1)+' фрагм.':''}</span>
+<div class="small">${esc(v.description||'')}</div>${ch?`<pre>${esc(ch)}</pre>`:''}</div></div>`}
+if(o){h+=`<div class="small">Блюр: ${(o.blur||[]).length} обл. · бипов: ${(o.bleeps||[]).length||0}</div>`}h+='</div>'}
+if(j.state==='render'||j.state==='done'||Object.keys(ren.pieces||{}).length){const tot=ren.total||(o&&o.pieces)||Object.keys(ren.pieces||{}).length;if(tot)h+=`<div class="card"><h3>Рендер (${Object.values(ren.pieces||{}).filter(c=>c.stage==='done').length}/${tot})</h3>${cells(ren.pieces||{},tot,'пьеса')}</div>`}
+if(ing.total)h+=`<div class="card"><h3>Загрузка и транскрипт (${Object.values(ing.chunks||{}).filter(c=>c.stage==='done').length}/${ing.total})${ing.done&&ing.started?' · '+Math.round((ing.done-ing.started)/1e3)+' с':''}</h3>${cells(ing.chunks||{},ing.total,'кусок')}${j.speakers?`<div class="small" style="margin-top:6px">Спикеры: ${esc(Object.entries(j.speakers).map(([k,v])=>`[${k}] ${Math.round(v)} с`).join(', '))}</div>`:''}</div>`;
+if(j.analysis){h+=`<div class="card"><h3>Шаги модели (${j.analysis.turns||j.analysis.steps.length})</h3><div class="steps" id="steps">${j.analysis.steps.map(stepHtml).join('')}</div></div>`}
+h+=`<div class="card"><h3>Журнал</h3><div class="ev">${(j.events||[]).slice().reverse().map(e=>new Date(e.t).toLocaleTimeString('ru')+'  '+esc(e.text)).join('\n')}</div></div>`;
+$('detail').innerHTML=h;const s=$('steps');if(s)s.scrollTop=s.scrollHeight}
+async function ents(){const L=await api(`/api/jobs/${sel}/entries`);const j=await api('/api/jobs/'+sel);$('ents').innerHTML='<div class="small" style="margin-top:8px">'+L.map(e=>`<div><a href="${j.download}/f/${e.i}">${esc(e.name)}</a> · ${mb(e.size)}</div>`).join('')+'</div>'}
+function reana(){const n=prompt('Пожелания модели для повторного анализа (пусто = как было):','');if(n===null)return;act('reanalyze',n?{notes:n}:{})}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+init();
+</script></body></html>

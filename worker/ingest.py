@@ -206,7 +206,7 @@ def main():
     t0 = time.time()
     plan = sw.get_json(f'{P}/plan.json')
     ch = plan['chunks'][IDX]; off = ch['start']
-    done = sw.head(f'{P}/chunks/{IDX:03d}/transcript.json.gz')
+    done = all(sw.head(f'{P}/chunks/{IDX:03d}/{n}') for n in ('transcript.json.gz', 'src.mp4', 'proxy.mp4'))
     if done and os.environ.get('FORCE') != '1':
         log('chunk already done, skipping'); prog('done', 100, force=True, skipped=True); return
     prog('download', 0, force=True)
@@ -235,7 +235,7 @@ def main():
            'utts': utts, 'speakers': {str(k): v for k, v in spk.items()}, 'turns': [[round(a0 + off, 2), round(a1 + off, 2), s] for a0, a1, s in turns],
            'loud': loud, 'freeze': freeze, 'scenes': scenes,
            'src_size': os.path.getsize(src), 'proxy_size': os.path.getsize(prox), 'elapsed': round(time.time() - t0)}
-    sw.put_bytes(f'{P}/chunks/{IDX:03d}/transcript.json.gz', gzip.compress(json.dumps(res, ensure_ascii=False).encode()), 'application/gzip')
+    sw.put_verified(f'{P}/chunks/{IDX:03d}/transcript.json.gz', gzip.compress(json.dumps(res, ensure_ascii=False).encode()), 'application/gzip')
     log(f'done in {time.time()-t0:.0f}s: {len(utts)} utterances, {len(spk)} local speakers')
     prog('done', 100, force=True, utts=len(utts), speakers=len(spk), elapsed=res['elapsed'])
 
