@@ -1,0 +1,43 @@
+name: render
+run-name: "render ${{ inputs.job_id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {required: true, type: string}
+      pieces: {description: 'JSON list of piece indices', required: true, type: string}
+      parallel: {default: '25', type: string}
+      videos: {description: 'only assemble these video ids (comma list), empty = all', default: '', type: string}
+env:
+  JOB_ID: ${{ inputs.job_id }}
+  BLOMP_USER: ${{ secrets.BLOMP_USER }}
+  BLOMP_PASS: ${{ secrets.BLOMP_PASS }}
+  CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
+  HOOK_SECRET: ${{ secrets.HOOK_SECRET }}
+  PYTHONUNBUFFERED: '1'
+jobs:
+  piece:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 25
+      matrix:
+        p: ${{ fromJSON(inputs.pieces) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: render piece ${{ matrix.p }}
+        env: {PIECE: '${{ matrix.p }}'}
+        run: |
+          cd worker
+          for a in 1 2 3; do python render.py && exit 0; echo "attempt $a failed"; sleep 30; done; exit 1
+  assemble:
+    needs: piece
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - env: {VIDEOS: '${{ inputs.videos }}'}
+        run: cd worker && python assemble.py

@@ -1,0 +1,73 @@
+name: ingest
+run-name: "ingest ${{ inputs.job_id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {required: true, type: string}
+      url: {required: true, type: string}
+      workers: {default: '25', type: string}
+      quality: {default: '1080', type: string}
+      range_start: {default: '0', type: string}
+      range_end: {default: '0', type: string}
+      whisper_model: {default: 'large-v3-turbo', type: string}
+      language: {default: 'ru', type: string}
+      only: {description: 'rerun only these chunk indices, e.g. 3,7 (skips planning)', default: '', type: string}
+env:
+  JOB_ID: ${{ inputs.job_id }}
+  BLOMP_USER: ${{ secrets.BLOMP_USER }}
+  BLOMP_PASS: ${{ secrets.BLOMP_PASS }}
+  CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
+  HOOK_SECRET: ${{ secrets.HOOK_SECRET }}
+  PYTHONUNBUFFERED: '1'
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.p.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -q requests yt-dlp
+      - id: p
+        env:
+          SRC_URL: ${{ inputs.url }}
+          WORKERS: ${{ inputs.workers }}
+          QUALITY: ${{ inputs.quality }}
+          RANGE_START: ${{ inputs.range_start }}
+          RANGE_END: ${{ inputs.range_end }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          cd worker
+          if [ -n "$ONLY" ]; then echo "matrix={\"i\":[$ONLY]}" >> $GITHUB_OUTPUT; else python plan.py; fi
+  work:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 25
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          whisper: ${{ inputs.whisper_model }}
+      - name: ingest chunk ${{ matrix.i }}
+        env:
+          CHUNK: ${{ matrix.i }}
+          WHISPER_MODEL: ${{ inputs.whisper_model }}
+          LANGUAGE: ${{ inputs.language }}
+        run: |
+          cd worker
+          for a in 1 2 3; do python ingest.py && exit 0; echo "attempt $a failed"; sleep 30; done; exit 1
+  merge:
+    needs: [plan, work]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -q requests numpy
+      - run: cd worker && python merge.py

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+work/
+node_modules/
+data/
+config.json

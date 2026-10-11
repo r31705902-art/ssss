@@ -1,0 +1,6 @@
+requests
+yt-dlp
+numpy
+soundfile
+faster-whisper
+sherpa-onnx
