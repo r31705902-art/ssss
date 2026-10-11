@@ -82,7 +82,7 @@ function mount(cfgPath = process.env.AUTOCUT_CONFIG || path.join(process.env.HOM
           const u = new URL(req.url, 'http://x'); const t = Number(u.searchParams.get('t') || 0);
           const tr = j._chunks || (j._chunks = (await swift.getJson(`autocut/jobs/${j.id}/plan.json`))?.chunks?.map((c) => ({ i: c.i, start: c.start, end: c.end })));
           if (!tr) return json(res, 404, {});
-          const md = new Media({ swift, ffmpeg: cfg.ffmpeg || 'ffmpeg', tmp: path.join(dataDir, 'tmp'), jobPrefix: `autocut/jobs/${j.id}`, chunks: tr });
+          const md = new Media({ swift, ffmpeg: cfg.ffmpeg || 'ffmpeg', tmp: jobs.tmp, jobPrefix: `autocut/jobs/${j.id}`, chunks: tr });
           const jpg = await md.frame(t, { hq: u.searchParams.get('hq') === '1' });
           res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'max-age=3600' }); return res.end(jpg);
         }

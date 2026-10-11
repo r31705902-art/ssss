@@ -87,7 +87,7 @@ def main():
     script = os.path.join(W, 'fc.txt'); open(script, 'w').write(';\n'.join(fc))
     out = os.path.join(W, 'piece.mp4')
     gop = int(round(out_fps * 2))
-    args += ['-filter_complex_script', script, '-map', vout, '-map', '[ca]',
+    args += ['-/filter_complex', script, '-map', vout, '-map', '[ca]',
              '-c:v', 'libx264', '-preset', enc.get('preset', 'veryfast'), '-crf', str(enc.get('crf', 21)), '-pix_fmt', 'yuv420p',
              '-g', str(gop), '-keyint_min', str(gop), '-sc_threshold', '0', '-profile:v', 'high',
              '-c:a', 'aac', '-b:a', enc.get('abitrate', '160k'), '-ar', '48000', '-ac', '2', '-movflags', '+faststart', out]

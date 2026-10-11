@@ -15,10 +15,13 @@ class Jobs {
   constructor({ cfg, swift, gh, gemini, dataDir }) {
     this.cfg = cfg; this.sw = swift; this.gh = gh; this.g = gemini; this.dir = path.join(dataDir, 'jobs');
     fs.mkdirSync(this.dir, { recursive: true });
-    this.tmp = path.join(dataDir, 'tmp'); fs.mkdirSync(this.tmp, { recursive: true });
+    // media temp files go to tmpfs (home quota on shared hosting is tiny)
+    this.tmp = cfg.tmp_dir || path.join(require('node:os').tmpdir(), 'autocut-' + (process.getuid ? process.getuid() : 'u')); fs.mkdirSync(this.tmp, { recursive: true });
+    this.mirrorAt = new Map();
     this.jobs = new Map(); this.running = new Set(); this.dirty = new Set();
     for (const f of fs.readdirSync(this.dir)) if (f.endsWith('.json')) { const j = readJson(path.join(this.dir, f)); if (j && j.id) this.jobs.set(j.id, j); }
     log(`jobs loaded: ${this.jobs.size}`);
+    this.restore().catch((e) => log('state restore failed', e.message));
     this.timer = setInterval(() => this.tick().catch((e) => log('tick error', e.message)), 15000);
     setInterval(() => this.flush(), 3000);
     setTimeout(() => this.tick().catch(() => {}), 2000);
@@ -26,7 +29,31 @@ class Jobs {
   }
   P(j) { return `autocut/jobs/${j.id}`; }
   save(j, now = false) { j.updated = Date.now(); this.dirty.add(j.id); if (now) this.flush(); }
-  flush() { for (const id of this.dirty) { const j = this.jobs.get(id); if (j) writeJson(path.join(this.dir, id + '.json'), j); } this.dirty.clear(); }
+  flush() {
+    for (const id of this.dirty) {
+      const j = this.jobs.get(id); if (!j) continue;
+      try { writeJson(path.join(this.dir, id + '.json'), j); } catch (e) { if (!this._wErr || Date.now() - this._wErr > 60e3) { this._wErr = Date.now(); log('local state write failed (disk quota?)', e.message); } }
+      // mirror job state to Blomp so it survives a full/broken local disk
+      const last = this.mirrorAt.get(id) || 0;
+      if (Date.now() - last > 30e3 || ['done', 'failed', 'canceled'].includes(j.state)) {
+        this.mirrorAt.set(id, Date.now());
+        const { _chunks, ...clean } = j;
+        this.sw.putJson(`autocut/state/${id}.json`, clean).catch((e) => log('state mirror failed', id, e.message));
+      }
+    }
+    this.dirty.clear();
+  }
+  async restore() {
+    const objs = await this.sw.list('autocut/state/');
+    let n = 0;
+    for (const o of objs) {
+      const id = (o.name || o).split('/').pop().replace(/\.json$/, '');
+      if (!id || this.jobs.has(id)) continue;
+      const j = await this.sw.getJson(`autocut/state/${id}.json`); if (!j || !j.id || j.deleted) continue;
+      this.jobs.set(j.id, j); n++;
+    }
+    if (n) log(`restored ${n} jobs from Blomp`);
+  }
   ev(j, text, extra) {
     j.events = j.events || [];
     j.events.push({ t: Date.now(), text, ...(extra || {}) });
@@ -53,6 +80,7 @@ class Jobs {
     if (j.ingest?.run && j.state === 'ingest') await this.gh.cancel(j.ingest.run);
     if (j.render?.run && j.state === 'render') await this.gh.cancel(j.render.run);
     this.jobs.delete(j.id); fs.rmSync(path.join(this.dir, j.id + '.json'), { force: true });
+    this.sw.del(`autocut/state/${j.id}.json`).catch(() => {});
     if (purge) this.sw.delPrefix(this.P(j) + '/').then((n) => log(`purged ${n} objects of ${j.id}`)).catch(() => {});
   }
   async cancel(j) {
