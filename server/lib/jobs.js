@@ -98,7 +98,7 @@ class Jobs {
     const id = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${rid(6)}`;
     const o = { ...this.cfg.defaults, ...(opts || {}) };
     for (const k of ['workers', 'quality', 'range_start', 'range_end']) if (o[k] != null) o[k] = Number(o[k]) || 0;
-    o.workers = Math.min(Math.max(o.workers || 25, 1), 60);
+    o.workers = Math.min(Math.max(o.workers || 20, 1), 60);
     const j = { id, url, opts: o, created: Date.now(), state: 'queued', stage: 'в очереди', dl: rid(16), events: [], ingest: { chunks: {}, tries: 0 }, render: { pieces: {}, tries: 0 } };
     this.jobs.set(id, j); this.ev(j, 'создано: ' + url); this.save(j, true); this.saveIndex();
     setTimeout(() => this.tick().catch(() => {}), 100);
