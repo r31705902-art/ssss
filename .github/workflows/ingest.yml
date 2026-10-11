@@ -53,6 +53,7 @@ jobs:
         with:
           whisper: ${{ inputs.whisper_model }}
       - name: ingest chunk ${{ matrix.i }}
+        timeout-minutes: 120  # a stuck chunk fails here; merge reports it missing and the server re-runs just that chunk
         env:
           CHUNK: ${{ matrix.i }}
           WHISPER_MODEL: ${{ inputs.whisper_model }}

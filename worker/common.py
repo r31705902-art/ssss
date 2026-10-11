@@ -140,7 +140,7 @@ class Swift:
         return h['name'] if h else name
 
     def delete(self, name):
-        try: self._req('DELETE', name)
+        try: self._req('DELETE', name, params={'multipart-manifest': 'delete'})
         except NotFound: pass
 
     def list(self, prefix):
@@ -187,29 +187,57 @@ class Swift:
             log(f'verify failed for {name} (got {h and h["size"]}, want {size}), re-upload {attempt+1}')
         raise RuntimeError(f'upload verify failed: {name}')
 
+    SLO_MIN = 256 << 20      # bigger files go up as a Static Large Object (Blomp listing is broken -> DLO is useless)
+    SLO_SEG = 128 << 20
+
     def _upload(self, name, path, ctype, meta):
         size = os.path.getsize(path)
         hdr = {'Content-Type': ctype}
         for k, v in (meta or {}).items(): hdr['X-Object-Meta-' + k] = str(v)
         t0 = time.time()
-        if size <= self.SEG * 4:
+        # (connect, read) timeouts: a stalled Blomp PUT used to block a worker for up to 1h per retry
+        if size <= self.SLO_MIN:
             def body():
                 return open(path, 'rb')
-            self._req('PUT', name, data=body, headers=hdr, timeout=3600, what=f'upload {name}')
-        else:  # Dynamic Large Object
-            n = 0
-            with open(path, 'rb') as f:
-                while True:
-                    off = n * self.SEG
-                    if off >= size: break
-                    def body(off=off):
-                        f.seek(off); return f.read(self.SEG)
-                    self._req('PUT', f'{name}.seg/{n:05d}', data=body, timeout=3600, what=f'upload {name} seg {n}')
-                    n += 1
-            h = dict(hdr); h['X-Object-Manifest'] = f'{self.container}/{name}.seg/'
-            self._req('PUT', name, data=b'', headers=h)
+            self._req('PUT', name, data=body, headers=hdr, timeout=(30, 300), what=f'upload {name}')
+        else:
+            self._upload_slo(name, path, size, hdr)
         dt = time.time() - t0
         log(f'uploaded {name} {size/1e6:.1f} MB in {dt:.0f}s ({size/1e6/max(dt,0.01):.1f} MB/s)')
+
+    def _upload_slo(self, name, path, size, hdr):
+        import hashlib, concurrent.futures as cf
+        n = (size + self.SLO_SEG - 1) // self.SLO_SEG
+        stamp = f'{int(time.time())}'
+        segs = [None] * n
+
+        def put_seg(i):
+            with open(path, 'rb') as f:
+                f.seek(i * self.SLO_SEG); b = f.read(self.SLO_SEG)
+            md5 = hashlib.md5(b).hexdigest()
+            sname = f'{name}.slo/{stamp}/{i:05d}'
+            def go():
+                self._req('PUT', sname, data=b, timeout=(30, 180), what=f'upload {name} seg {i}/{n}')
+                h = self.head_exact(sname)
+                if not h or h['size'] != len(b): raise RuntimeError(f'seg {i} missing after put')
+            retry(go, f'seg {i}', tries=10)
+            segs[i] = {'path': f'/{self.container}/{sname}', 'etag': md5, 'size_bytes': len(b)}
+
+        with cf.ThreadPoolExecutor(3) as ex:
+            for f in [ex.submit(put_seg, i) for i in range(n)]: f.result()
+        man = json.dumps(segs).encode()
+        def go():
+            self.auth()
+            h = dict(hdr); h['X-Auth-Token'] = self.token
+            r = self.s.put(self.obj_url(name) + '?multipart-manifest=put', data=man, headers=h, timeout=(30, 300))
+            if r.status_code == 401: self.auth(True); raise RuntimeError('401 reauth')
+            if r.status_code not in (200, 201, 202):
+                self.put_errors[name] = self.put_errors.get(name, 0) + 1
+                if r.status_code == 400:  # a segment was dropped by Blomp -> re-put the reported ones
+                    for i, sg in enumerate(segs):
+                        if sg['path'].split('/', 2)[2] in r.text: put_seg(i)
+                raise RuntimeError(f'SLO manifest {name} -> {r.status_code} {r.text[:160]}')
+        retry(go, f'manifest {name}', tries=8)
 
     def download_file(self, name, path, chunk=8 << 20):
         """Resumable download with Range retries."""

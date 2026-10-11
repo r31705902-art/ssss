@@ -26,7 +26,7 @@ class Swift {
   async req(method, name, { body, headers = {}, ok = [200, 201, 202, 204, 206], tries = 10, timeout = 300000 } = {}) {
     return retry(async () => {
       await this.auth();
-      const r = await fetch(this.objUrl(name), { method, body, headers: { ...headers, 'X-Auth-Token': this.token }, signal: AbortSignal.timeout(timeout) });
+      const r = await fetch(this.objUrl(name) + (method === 'DELETE' ? '?multipart-manifest=delete' : ''), { method, body, headers: { ...headers, 'X-Auth-Token': this.token }, signal: AbortSignal.timeout(timeout) });
       if (r.status === 401) { await this.auth(true); throw new Error('401'); }
       if (r.status === 404 && method !== 'PUT') { const e = new Error('404 ' + name); e.notFound = true; throw e; }
       if (!ok.includes(r.status)) { if (method === 'PUT') { this.putErr = this.putErr || new Set(); this.putErr.add(name); } const t = await r.text().catch(() => ''); throw new Error(`${method} ${name} -> ${r.status} ${t.slice(0, 100)}`); }
