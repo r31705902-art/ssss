@@ -58,7 +58,8 @@ class Swift {
   async getJson(name, d = null) { try { return JSON.parse((await this.get(name)).toString('utf8')); } catch (e) { if (e.notFound) return d; throw e; } }
   async getText(name, d = null) { try { return (await this.get(name)).toString('utf8'); } catch (e) { if (e.notFound) return d; throw e; } }
   async put(base, buf, type = 'application/octet-stream') {
-    let alias = 0;
+    let alias = 0; const known = this.rc && this.rc.get(base);
+    if (known && known !== base) { const m = /~(\d)(\.[^/]*)?$/.exec(known); if (m) alias = Number(m[1]); }
     for (let attempt = 0; attempt < 6; attempt++) {
       const name = Swift.alt(base, alias);
       this.putErr?.delete(name);
