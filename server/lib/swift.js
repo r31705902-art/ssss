@@ -29,14 +29,24 @@ class Swift {
       const r = await fetch(this.objUrl(name), { method, body, headers: { ...headers, 'X-Auth-Token': this.token }, signal: AbortSignal.timeout(timeout) });
       if (r.status === 401) { await this.auth(true); throw new Error('401'); }
       if (r.status === 404 && method !== 'PUT') { const e = new Error('404 ' + name); e.notFound = true; throw e; }
-      if (!ok.includes(r.status)) { const t = await r.text().catch(() => ''); throw new Error(`${method} ${name} -> ${r.status} ${t.slice(0, 100)}`); }
+      if (!ok.includes(r.status)) { if (method === 'PUT') { this.putErr = this.putErr || new Set(); this.putErr.add(name); } const t = await r.text().catch(() => ''); throw new Error(`${method} ${name} -> ${r.status} ${t.slice(0, 100)}`); }
       return r;
     }, `${method} ${name}`, { tries, giveUp: (e) => e.notFound });
   }
   async get(name, opts) { const r = await this.req('GET', name, opts); return Buffer.from(await r.arrayBuffer()); }
   async getJson(name, d = null) { try { return JSON.parse((await this.get(name)).toString('utf8')); } catch (e) { if (e.notFound) return d; throw e; } }
   async getText(name, d = null) { try { return (await this.get(name)).toString('utf8'); } catch (e) { if (e.notFound) return d; throw e; } }
-  async put(name, buf, type = 'application/octet-stream') { await this.req('PUT', name, { body: buf, headers: { 'Content-Type': type } }); }
+  async put(name, buf, type = 'application/octet-stream', _depth = 0) {
+    this.putErr?.delete(name);
+    await this.req('PUT', name, { body: buf, headers: { 'Content-Type': type } });
+    // Blomp quirk: after a failed PUT attempt + successful retry the object may vanish ~1 min later -> verify & re-put
+    if (this.putErr?.has(name) && _depth < 3) {
+      this.putErr.delete(name);
+      await new Promise((ok) => setTimeout(ok, 70000));
+      const h = await this.head(name).catch(() => null);
+      if (!h || h.size !== buf.length) { log('blomp dropped', name, '-> re-put'); return this.put(name, buf, type, _depth + 1); }
+    }
+  }
   async putJson(name, o) { return this.put(name, Buffer.from(JSON.stringify(o)), 'application/json'); }
   async head(name) {
     try { const r = await this.req('HEAD', name, { tries: 6 }); return { size: Number(r.headers.get('content-length') || 0) }; }

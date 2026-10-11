@@ -29,6 +29,7 @@ class Swift:
     def __init__(self, user=None, key=None, auth_url=None, container=None):
         self.user = user or os.environ['BLOMP_USER']
         self.key = key or os.environ['BLOMP_PASS']
+        self.put_errors = {}
         self.auth_url = (auth_url or os.environ.get('BLOMP_AUTH_URL') or 'https://authenticate.ain.net').rstrip('/')
         self.container = container or os.environ.get('BLOMP_CONTAINER') or self.user
         self.token = None; self.url = None; self.exp = 0
@@ -63,6 +64,7 @@ class Swift:
             if r.status_code == 404 and method in ('GET', 'HEAD', 'DELETE'):
                 raise NotFound(name)
             if r.status_code not in expect:
+                if method == 'PUT': self.put_errors[name] = self.put_errors.get(name, 0) + 1
                 raise RuntimeError(f'{method} {name} -> {r.status_code} {r.text[:120]}')
             return r
         return retry(go, what or f'{method} {name}', ok_exc=(NotFound,))
@@ -72,10 +74,15 @@ class Swift:
 
     def put_verified(self, name, b, ctype='application/octet-stream'):
         for attempt in range(5):
+            self.put_errors.pop(name, None)
             self.put_bytes(name, b, ctype)
             for k in range(5):
                 h = self.head(name)
-                if h and h['size'] == len(b): return
+                if h and h['size'] == len(b):
+                    if not self.put_errors.get(name): return
+                    time.sleep(60); h = self.head(name)
+                    if h and h['size'] == len(b): return
+                    log(f'{name} vanished after upload, re-put'); break
                 time.sleep(2 + 3 * k)
             log(f'verify failed for {name}, re-put')
         raise RuntimeError('put verify failed: ' + name)
@@ -123,12 +130,23 @@ class Swift:
     def upload_file(self, name, path, ctype='application/octet-stream', meta=None):
         """Upload + verify (Blomp sometimes acks a PUT but loses the object). Re-uploads on mismatch."""
         size = os.path.getsize(path)
-        for attempt in range(5):
+        for attempt in range(6):
+            self.put_errors.pop(name, None)
             self._upload(name, path, ctype, meta)
+            ok = False
             for k in range(6):
                 h = self.head(name)
-                if h and h['size'] == size: return size
+                if h and h['size'] == size: ok = True; break
                 time.sleep(3 + 4 * k)
+            if ok:
+                # Blomp quirk: when a PUT attempt failed (503) and a retry succeeded, the object often vanishes
+                # ~30-60 s later. Re-check after a settle period and re-upload if it was dropped.
+                settle = 75 if self.put_errors.get(name) else 8
+                time.sleep(settle)
+                h = self.head(name)
+                if h and h['size'] == size: return size
+                log(f'{name} vanished after upload (settle {settle}s), re-upload {attempt+1}')
+                continue
             log(f'verify failed for {name} (got {h and h["size"]}, want {size}), re-upload {attempt+1}')
         raise RuntimeError(f'upload verify failed: {name}')
 
