@@ -18,7 +18,7 @@ class Jobs {
     fs.mkdirSync(this.dir, { recursive: true });
     // media temp files go to tmpfs (home quota on shared hosting is tiny)
     this.tmp = cfg.tmp_dir || path.join(require('node:os').tmpdir(), 'autocut-' + (process.getuid ? process.getuid() : 'u')); fs.mkdirSync(this.tmp, { recursive: true });
-    this.mirrorAt = new Map();
+    this.mirrorAt = new Map(); this.SP = cfg.state_prefix || 'autocut/state';
     this.jobs = new Map(); this.running = new Set(); this.dirty = new Set();
     for (const f of fs.readdirSync(this.dir)) if (f.endsWith('.json')) { const j = readJson(path.join(this.dir, f)); if (j && j.id) this.jobs.set(j.id, j); }
     log(`jobs loaded: ${this.jobs.size}`);
@@ -39,19 +39,19 @@ class Jobs {
       if (Date.now() - last > 30e3 || ['done', 'failed', 'canceled'].includes(j.state)) {
         this.mirrorAt.set(id, Date.now());
         const { _chunks, ...clean } = j;
-        this.sw.putJson(`autocut/state/${id}.json`, clean).catch((e) => log('state mirror failed', id, e.message));
+        this.sw.putJson(`${this.SP}/${id}.json`, clean).catch((e) => log('state mirror failed', id, e.message));
       }
     }
     this.dirty.clear();
   }
   // Blomp container listing is broken (always empty) -> keep our own index of job ids
-  saveIndex() { this.sw.putJson('autocut/state/index.json', { ids: [...this.jobs.keys()], t: Date.now() }).catch((e) => log('index save failed', e.message)); }
+  saveIndex() { this.sw.putJson(this.SP + '/index.json', { ids: [...this.jobs.keys()], t: Date.now() }).catch((e) => log('index save failed', e.message)); }
   async restore() {
-    const idx = await this.sw.getJson('autocut/state/index.json', null);
+    const idx = await this.sw.getJson(this.SP + '/index.json', null);
     let n = 0;
     for (const id of idx?.ids || []) {
       if (this.jobs.has(id)) continue;
-      const j = await this.sw.getJson(`autocut/state/${id}.json`).catch(() => null); if (!j || !j.id) continue;
+      const j = await this.sw.getJson(`${this.SP}/${id}.json`).catch(() => null); if (!j || !j.id) continue;
       this.jobs.set(j.id, j); n++;
     }
     if (n) log(`restored ${n} jobs from Blomp`);
@@ -108,7 +108,7 @@ class Jobs {
     if (j.ingest?.run && j.state === 'ingest') await this.gh.cancel(j.ingest.run);
     if (j.render?.run && j.state === 'render') await this.gh.cancel(j.render.run);
     this.jobs.delete(j.id); fs.rmSync(path.join(this.dir, j.id + '.json'), { force: true });
-    this.sw.del(`autocut/state/${j.id}.json`).catch(() => {});
+    this.sw.del(`${this.SP}/${j.id}.json`).catch(() => {});
     this.saveIndex();
     if (purge) this.purge(j).then((n) => log(`purged ${n} objects of ${j.id}`)).catch((e) => log('purge failed', e.message));
   }
