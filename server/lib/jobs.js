@@ -82,6 +82,13 @@ class Jobs {
     }));
     return n;
   }
+  ev(j, text, extra) {
+    j.events = j.events || [];
+    j.events.push({ t: Date.now(), text, ...(extra || {}) });
+    if (j.events.length > 600) j.events.splice(0, j.events.length - 600);
+    this.save(j);
+  }
+  set(j, state, stage) { j.state = state; if (stage !== undefined) j.stage = stage; this.ev(j, `→ ${state}${stage ? ': ' + stage : ''}`); this.save(j, true); }
   list() { return [...this.jobs.values()].sort((a, b) => b.created - a.created); }
   get(id) { return this.jobs.get(id); }
   create(url, opts) {
