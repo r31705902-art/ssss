@@ -47,6 +47,17 @@ class Swift {
     for (let k = 0; k < 5; k++) { const h = await this.headExact(Swift.alt(name, k)); if (h) { (this.rc = this.rc || new Map()).set(name, h.name); return h; } }
     return null;
   }
+  // SLO manifest: list segments that are gone (Blomp drops objects). null = plain object / not found.
+  async sloMissing(name) {
+    await this.auth(); name = await this.resolve(name);
+    const r = await fetch(this.objUrl(name) + '?multipart-manifest=get', { headers: { 'X-Auth-Token': this.token }, signal: AbortSignal.timeout(60000) });
+    if (!r.ok) return null;
+    let segs; try { segs = JSON.parse(await r.text()); } catch { return null; }
+    if (!Array.isArray(segs)) return null;
+    const miss = [];
+    for (const g of segs) { const sn = g.name.split('/').slice(2).join('/'); const h = await this.headExact(sn).catch(() => null); if (!h || h.size !== g.bytes) miss.push(sn); }
+    return miss;
+  }
   async resolve(name) {
     const c = this.rc && this.rc.get(name); if (c) return c;
     const h = await this.head(name); return h ? h.name : name;

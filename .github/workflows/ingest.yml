@@ -12,6 +12,7 @@ on:
       whisper_model: {default: 'large-v3-turbo', type: string}
       language: {default: 'ru', type: string}
       only: {description: 'rerun only these chunk indices, e.g. 3,7 (skips planning)', default: '', type: string}
+      force: {description: '1 = re-download/re-upload even if chunk looks done (repair)', default: '0', type: string}
 env:
   JOB_ID: ${{ inputs.job_id }}
   BLOMP_USER: ${{ secrets.BLOMP_USER }}
@@ -56,6 +57,7 @@ jobs:
         timeout-minutes: 120  # a stuck chunk fails here; merge reports it missing and the server re-runs just that chunk
         env:
           CHUNK: ${{ matrix.i }}
+          FORCE: ${{ inputs.force }}
           WHISPER_MODEL: ${{ inputs.whisper_model }}
           LANGUAGE: ${{ inputs.language }}
         run: |

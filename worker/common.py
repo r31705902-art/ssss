@@ -225,6 +225,17 @@ class Swift:
 
         with cf.ThreadPoolExecutor(3) as ex:
             for f in [ex.submit(put_seg, i) for i in range(n)]: f.result()
+        # Blomp quirk: freshly written objects sometimes vanish 30-60 s later. Settle, re-check every segment,
+        # re-put the dropped ones under a fresh name (dropped names tend to stay "eaten") and only then write the manifest.
+        for rnd in range(5):
+            time.sleep(60 if rnd == 0 else 75)
+            lost = [i for i, sg in enumerate(segs) if not ((h := self.head_exact(sg['path'].split('/', 2)[2])) and h['size'] == sg['size_bytes'])]
+            if not lost: break
+            log(f'{name}: Blomp dropped segments {lost}, re-upload (round {rnd + 1})')
+            stamp = f'{int(time.time())}r{rnd}'
+            for i in lost: put_seg(i)
+        else:
+            raise RuntimeError(f'{name}: segments keep vanishing')
         man = json.dumps(segs).encode()
         def go():
             self.auth()

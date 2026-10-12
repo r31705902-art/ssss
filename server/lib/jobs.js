@@ -158,11 +158,11 @@ class Jobs {
     } finally { this._ticking = false; }
   }
 
-  async startIngest(j, only = '') {
+  async startIngest(j, only = '', force = false) {
     const o = j.opts;
     const inputs = { job_id: j.id, url: j.url, workers: String(o.workers), quality: String(o.quality || 1080), range_start: String(o.range_start || 0), range_end: String(o.range_end || 0),
-      whisper_model: o.whisper_model || 'large-v3-turbo', language: o.language || 'ru', only };
-    this.set(j, 'ingest', only ? `перезапуск кусков ${only}` : 'запуск воркеров');
+      whisper_model: o.whisper_model || 'large-v3-turbo', language: o.language || 'ru', only, force: force ? '1' : '0' };
+    this.set(j, 'ingest', force ? `починка кусков ${only} (Blomp потерял данные)` : only ? `перезапуск кусков ${only}` : 'запуск воркеров');
     j.ingest.run = await this.gh.dispatch('ingest', inputs, 'ingest ' + j.id);
     j.ingest.started = j.ingest.started || Date.now();
     this.ev(j, 'GitHub run ' + j.ingest.run, { run: j.ingest.run }); this.save(j, true);
@@ -173,6 +173,11 @@ class Jobs {
     if (run.status !== 'completed') { if (!j.ingest.total || Date.now() - (j.ingest.jt || 0) > 60e3) { j.ingest.jt = Date.now(); this.syncJobs(j, run.id, 'ingest'); } return; }
     const tr = await this.sw.head(this.P(j) + '/transcript.json.gz');
     const missing = await this.sw.getJson(this.P(j) + '/missing.json', null);
+    if (tr && run.conclusion === 'success' && (j.ingest.repairs || 0) < 3) {
+      const bad = await this.brokenChunks(j);
+      if (bad.length) return this.repair(j, bad, j.ingest.after || 'analyze');
+    }
+    if (tr && run.conclusion === 'success' && j.ingest.after === 'render') { j.ingest.after = null; this.ev(j, 'куски починены'); this.set(j, 'render_wait', 'перерендер после починки'); return; }
     if (tr && run.conclusion === 'success') { j.ingest.done = Date.now(); this.ev(j, `загрузка+транскрипт готовы за ${Math.round((j.ingest.done - j.ingest.started) / 1000)} с`); this.set(j, 'analyze', 'анализ ИИ'); return; } // tick() starts analysis (not awaited, limited by max_analyze)
     if (run.conclusion === 'cancelled') return this.fail(j, 'ingest', 'GitHub run отменён');
     if (missing && missing.length && j.ingest.tries < 3) {
@@ -184,6 +189,26 @@ class Jobs {
     if (!(await this.sw.head(this.P(j) + '/plan.json'))) return this.fail(j, 'ingest', 'не удалось разобрать ссылку (plan) — проверь URL');
     if (j.ingest.tries < 2) { j.ingest.tries++; this.ev(j, 'ingest упал, повтор'); return this.startIngest(j); }
     this.fail(j, 'ingest', 'ingest завершился с ошибкой: ' + run.conclusion);
+  }
+  // every chunk's src/proxy must be fully readable (Blomp drops SLO segments); returns broken chunk indices
+  async brokenChunks(j) {
+    const plan = await this.sw.getJson(this.P(j) + '/plan.json', null); if (!plan) return [];
+    const bad = new Set();
+    await Promise.all(plan.chunks.map(async (c) => {
+      for (const k of ['src', 'proxy']) {
+        const n = `${this.P(j)}/chunks/${String(c.i).padStart(3, '0')}/${k}.mp4`;
+        const h = await this.sw.head(n).catch(() => null);
+        if (!h) { bad.add(c.i); return; }
+        const miss = await this.sw.sloMissing(n).catch(() => null);
+        if (miss && miss.length) { bad.add(c.i); return; }
+      }
+    }));
+    return [...bad].sort((a, b) => a - b);
+  }
+  async repair(j, bad, after) {
+    j.ingest.repairs = (j.ingest.repairs || 0) + 1; j.ingest.after = after;
+    this.ev(j, `Blomp потерял части кусков ${bad.join(',')} — перекачиваю их с Twitch (${j.ingest.repairs}/3)`);
+    await this.startIngest(j, bad.join(','), true);
   }
   async syncJobs(j, runId, kind) {
     try {
@@ -273,6 +298,10 @@ class Jobs {
       return;
     }
     if (run.conclusion === 'cancelled') return this.fail(j, 'render', 'GitHub run отменён');
+    if ((j.ingest.repairs || 0) < 3) {
+      const bad = await this.brokenChunks(j);
+      if (bad.length) { j.render.tries = 0; return this.repair(j, bad, 'render'); }
+    }
     if (j.render.tries < 2) {
       j.render.tries++;
       const rp = await this.sw.getJson(this.P(j) + '/render.json');
