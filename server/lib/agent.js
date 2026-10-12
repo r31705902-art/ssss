@@ -72,7 +72,11 @@ class Agent {
       `\n# Транскрипт\n${this.transcriptText()}`,
     ].filter(Boolean).join('\n');
   }
-  examples() { try { return fs.readFileSync(path.join(PROMPTS, 'title_examples.txt'), 'utf8').split('\n').filter(Boolean).slice(0, 120).join('\n'); } catch { return ''; } }
+  examples() {
+    const rd = (f) => { try { return fs.readFileSync(path.join(PROMPTS, f), 'utf8'); } catch { return ''; } };
+    return rd('title_examples.txt').split('\n').filter(Boolean).slice(0, 300).join('\n') +
+      '\n\n## Примеры таймкодов реальных нарезок (T2x2 NEWS) — повторяй этот стиль\n' + rd('chapter_examples.txt');
+  }
   imgParts(list, label = 'кадр') {
     const parts = [];
     for (const f of list) {
@@ -137,6 +141,19 @@ class Agent {
     const errs = []; const R = this.tr.range;
     const t = (v, what) => { const x = parseTs(v); if (!Number.isFinite(x)) { errs.push(`${what}: неверное время "${v}"`); return null; } if (x < R[0] - 5 || x > R[1] + 5) errs.push(`${what}: время ${v} вне записи`); return x; };
     if (!r.stream_title) errs.push('нет stream_title');
+    // naming style (see «Как называть» / «Таймкоды»)
+    const esc = (x) => String(x || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const nk = [this.tr.meta?.uploader, this.tr.meta?.channel].filter((x) => x && x.length >= 3).map(esc);
+    const NAME = new RegExp(`(^|[^а-яёa-z0-9])(т2х2|t2x2|антон\\S*|тох[аиеу]${nk.length ? '|' + nk.join('|') : ''})([^а-яёa-z0-9]|$)`, 'i');
+    const badTitle = (x, what) => { x = String(x || ''); if (/►/.test(x)) errs.push(`${what} «${x}»: не используй ►, шаблоны: «… | РЕАКЦИЯ T2X2», «… | T2x2 ИГРАЕТ В …», «T2x2 НОВОСТИ: …»`); if (/(t2x2|т2х2) про(\s|$)/i.test(x)) errs.push(`${what} «${x}»: «T2x2 про …» нельзя, используй шаблон`); if (x.length > 95) errs.push(`${what} «${x.slice(0, 40)}…»: длиннее 95 символов`); };
+    const badChap = (c, what) => { const x = String(c.title || ''); const w = []; if (x.length > 38) w.push('длиннее 38 символов'); if (/:/.test(x)) w.push('двоеточие'); if (NAME.test(x)) w.push('имя стримера'); if (x.length > 6 && x === x.toUpperCase() && /[А-ЯЁ]{4}/.test(x)) w.push('капс'); if (w.length) errs.push(`${what} «${x}»: ${w.join(', ')} — коротко, 2–5 слов, как «Заказал сосалки», «Про крипту», «Реклама»`); };
+    badTitle(r.stream_title, 'stream_title');
+    (r.timecodes || []).forEach((c, i) => badChap(c, `timecodes[${i}]`));
+    (r.videos || []).forEach((v, i) => {
+      if (v.kind === 'highlight') { const x = String(v.title || ''); if (NAME.test(x)) errs.push(`videos[${i}] хайлайт «${x}»: убери имя стримера (T2x2/Антон/Тоха) — «Моется с открытыми глазами», а не «Почему Т2х2 моется…»`); if (x.split(/\s+/).length > 8) errs.push(`videos[${i}] хайлайт «${x}»: максимум ~6 слов`); }
+      else badTitle(v.title, `videos[${i}].title`);
+      (v.chapters || []).forEach((c, k) => badChap(c, `videos[${i}].chapters[${k}]`));
+    });
     if (!Array.isArray(r.timecodes) || r.timecodes.length < 2) errs.push('нужны timecodes (минимум несколько)');
     const wantVideos = this.opts.parts !== false || this.opts.highlights;
     if (wantVideos && (!Array.isArray(r.videos) || !r.videos.length)) errs.push('нет videos');

@@ -123,7 +123,7 @@ class Jobs {
     j.error = null;
     if (st === 'ingest') { j.ingest.tries = 0; this.set(j, 'queued', 'повтор: загрузка'); }
     else if (st === 'analyze') { j.analyzeTries = 0; j.analyzeAfter = 0; this.set(j, 'analyze', 'повтор анализа'); }
-    else { j.render.tries = 0; this.set(j, 'render_wait', 'повтор рендера'); }
+    else { j.render.tries = 0; j.ingest.repairs = 0; j.render.precheck = true; this.set(j, 'render_wait', 'повтор рендера'); }
   }
   reanalyze(j, notes) { if (notes != null) j.opts.notes = notes; j.analysis = null; j.analyzeTries = 0; j.analyzeAfter = 0; this.set(j, 'analyze', 'повторный анализ'); }
   fail(j, where, msg) { j.error = msg; j.failedAt = where; this.set(j, 'error', `${where}: ${String(msg).slice(0, 300)}`); }
@@ -151,7 +151,10 @@ class Jobs {
           if (j.state === 'queued' && !this.ghBusy()) await this.startIngest(j);
           else if (j.state === 'ingest') await this.pollIngest(j);
           else if (j === nextA && this.running.size < (this.cfg.max_analyze || 1)) this.analyze(j); // the Gemini proxy chokes on parallel agents
-          else if (j.state === 'render_wait' && !this.ghBusy()) await this.startRender(j);
+          else if (j.state === 'render_wait' && !this.ghBusy()) {
+            if (j.render?.precheck) { j.render.precheck = false; const bad = await this.brokenChunks(j); if (bad.length) { await this.repair(j, bad, 'render'); continue; } }
+            await this.startRender(j);
+          }
           else if (j.state === 'render') await this.pollRender(j);
         } catch (e) { log(`job ${j.id} tick: ${e.message}`); this.ev(j, 'ошибка шага: ' + e.message.slice(0, 300)); if (e.fatal) this.fail(j, j.state === 'render' || j.state === 'render_wait' ? 'render' : 'ingest', e.message); }
       }
