@@ -197,7 +197,8 @@ class Jobs {
   async brokenChunks(j) {
     const plan = await this.sw.getJson(this.P(j) + '/plan.json', null); if (!plan) return [];
     const bad = new Set();
-    await Promise.all(plan.chunks.map(async (c) => {
+    const q = [...plan.chunks]; // few at a time: Blomp + 1GB RAM
+    await Promise.all(Array.from({ length: 4 }, async () => { for (let c; (c = q.shift());) await (async () => {
       for (const k of ['src', 'proxy']) {
         const n = `${this.P(j)}/chunks/${String(c.i).padStart(3, '0')}/${k}.mp4`;
         const h = await this.sw.head(n).catch(() => null);
@@ -205,7 +206,7 @@ class Jobs {
         const miss = await this.sw.sloMissing(n).catch(() => null);
         if (miss && miss.length) { bad.add(c.i); return; }
       }
-    }));
+    })(); }));
     return [...bad].sort((a, b) => a - b);
   }
   async repair(j, bad, after) {

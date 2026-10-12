@@ -51,7 +51,10 @@ class Swift {
   async sloMissing(name) {
     await this.auth(); name = await this.resolve(name);
     const r = await fetch(this.objUrl(name) + '?multipart-manifest=get', { headers: { 'X-Auth-Token': this.token }, signal: AbortSignal.timeout(60000) });
-    if (!r.ok) return null;
+    if (!r.ok) { r.body?.cancel().catch(() => {}); return null; }
+    // plain (non-SLO) objects come back as the whole file — never buffer that (OOM on 1GB box)
+    const len = Number(r.headers.get('content-length') || 0), ct = r.headers.get('content-type') || '';
+    if (!/json/i.test(ct) || !len || len > 4e6) { r.body?.cancel().catch(() => {}); return null; }
     let segs; try { segs = JSON.parse(await r.text()); } catch { return null; }
     if (!Array.isArray(segs)) return null;
     const miss = [];
